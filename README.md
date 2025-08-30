@@ -1,77 +1,181 @@
-# IOTricity_Nanites
-The IOT Project taken up by Nanites.
+# IOTricity\_Nanites
 
-🌱 Greenhouse Control System
+**IoT Smart Greenhouse Control System** — the Nanites project.
 
-An IoT-powered Smart Greenhouse Control System that uses sensors and actuators to monitor and automate greenhouse conditions. This project integrates temperature, humidity, and soil moisture sensors with automated ventilation and irrigation systems, enhanced by AI-driven decision-making for optimal crop growth.
+---
 
-🚀 Features
+## Project summary
 
-📊 Real-time Monitoring
-> Temperature, humidity, and soil moisture sensors provide live data.
+An IoT-powered Smart Greenhouse Control System that monitors and automates greenhouse conditions using distributed sensors, actuators, and AI-driven decision making. The system focuses on keeping crops in their optimal bands (temperature, humidity, VPD, soil moisture, PPFD, CO₂) while conserving resources (water, energy) and providing remote monitoring & alerts.
 
-🤖 AI-Powered Automation
-> Smart algorithms adjust watering and ventilation automatically.
-> Predictive AI models suggest the best conditions for specific crops.
+The repository contains the AI components (training, inference services, demo pipelines) for irrigation optimization, anomaly detection, and support for climate control and yield prediction.
 
-💧 Automated Irrigation
-> Watering system triggered when soil moisture is low.
+---
 
-🌬️ Smart Ventilation
-> Fans or vents are activated when temperature/humidity exceed thresholds.
+## Quick features
 
-📱 Remote Access
-> Web/mobile dashboard to view greenhouse conditions.
-> Manual override option for farmers.
+* **Real-time monitoring:** Temperature, humidity, soil moisture, light (PPFD/lux), CO₂.
+* **AI-powered automation:** Models suggest irrigation timing/volume, detect anomalies, and recommend climate setpoints.
+* **Automated irrigation & ventilation:** Actuators triggered automatically, with manual override via dashboard.
+* **Remote access & alerts:** Web/mobile dashboard, push/SMS/Telegram alerts for critical events.
+* **Resilient design:** ESP32 handles local safety rules; Raspberry Pi acts as edge inference and gateway; Cloud for heavy ML and model training.
 
-🛠️ Tech Stack
-Hardware: Arduino / ESP32, DHT11/DHT22 (temperature & humidity), Soil Moisture Sensor, Relay Modules, Water Pump, Fans.
+---
 
-Software:
-Backend: Node.js / Spring Boot
-Frontend: React (for dashboard)
-Database: Firebase / PostgreSQL
-IoT Platform: MQTT / ThingsBoard
+## System architecture (edge → gateway → cloud)
 
-⚙️ System Architecture
-Sensors collect environmental data.
-Microcontroller (ESP32/Arduino) processes raw data.
-IoT Gateway sends data to the cloud via MQTT.
-AI Engine analyzes patterns and predicts required actions.
-Actuators (pump, fan, vents) execute control decisions.
-Dashboard (Web/Mobile) displays data & allows manual override.
-AI Integration
-Decision Support: AI suggests irrigation/ventilation timing based on weather forecasts & crop type.
-Adaptive Learning: System improves with usage by analyzing past patterns.
-Optimization: Reduces water/electricity usage while maximizing crop health.
+* **Sensors / Actuators:** ESP32-based sensor nodes or other microcontrollers read sensor arrays (BME280/SHT31, capacitive soil probes, PAR/BH1750, SCD30 CO₂) and control relays/MOSFETs for pumps, fans, heaters, and lights.
+* **Edge Gateway (Raspberry Pi / Jetson):** subscribes to MQTT telemetry, runs lightweight ML inference (irrigation advisor, anomaly detector), acts as fallback when cloud is unavailable, and controls actuators via MQTT commands.
+* **Cloud AI Server:** trains heavier models (yield forecasting, RL/MPC optimizers, large CNNs for vision), stores time-series data, and serves dashboards and OTA model updates.
+* **User Interface:** Grafana/Streamlit/React dashboard for visualization, configuration, and manual overrides.
 
-ESP32 = Edge controller → real-time sensing & actuator driving.
-Raspberry Pi / Jetson Nano / Cloud = AI layer → heavy ML tasks (yield prediction, anomaly detection, vision).
+---
 
-| Responsibility                                     | Hardware (sensors & actuators)                                                                                                                                                                  | Smart Models (AI/Control Algorithms)                                                                                                                                                                                |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Climate Control (Temp, Humidity, CO₂, Airflow)** | - Temp/Humidity: **BME280 / SHT31 / DHT22** <br> - CO₂: **SCD30 / MH-Z19B** <br> - Ventilation fans + MOSFET/relay <br> - Heater (PTC, resistive mats) <br> - Misters/humidifiers/dehumidifiers | - **PID control** for temp & humidity <br> - **Model Predictive Control (MPC)** with weather forecast <br> - **Adaptive VPD control** (vapor pressure deficit) <br> - **Anomaly detection** for stuck fans/heaters  |
-| **Irrigation & Water Management**                  | - Soil moisture: **capacitive probes (temp compensated)** <br> - Flow sensor: **YF-S201** <br> - Solenoid valves, DC pumps <br> - Water level float sensors                                     | - **ET₀-based scheduling** (FAO-56 Penman-Monteith) <br> - **Hybrid threshold + ET₀** irrigation <br> - **Random Forest regression** for irrigation prediction <br> - **Nutrient fertigation model** (optional)     |
-| **Lighting Control**                               | - Light sensor: **BH1750 / TSL2591** (budget) or **PAR quantum sensor** (Apogee SQ-500) <br> - LED grow lights w/ PWM dimming driver                                                            | - **DLI (Daily Light Integral)** scheduling <br> - **Energy optimization model** (balance natural + artificial light) <br> - Crop-stage-specific light schedules                                                    |
-| **CO₂ Enrichment**                                 | - NDIR CO₂ sensor (SCD30) <br> - CO₂ solenoid valves                                                                                                                                            | - Maintain setpoints w/ hysteresis <br> - **Feedforward model** (lockout when vents open) <br> - Crop-growth/yield correlation models                                                                               |
-| **Crop Growth Monitoring & Yield Prediction**      | - ESP32-CAM / Pi Camera <br> - Ultrasonic sensor for plant height <br> - Weight sensors for biomass                                                                                             | - **Computer Vision (YOLO, CNNs)** for leaf/fruit detection, ripeness <br> - **Growth regression models** (using DLI, degree-days, irrigation, CO₂) <br> - **Yield forecasting** (Gradient Boosting, Random Forest) |
-| **User Alerts & Interface**                        | - ESP32 Wi-Fi / LoRa nodes <br> - Cloud dashboard (Adafruit IO, ThingsBoard, Grafana) <br> - Mobile app/web UI                                                                                  | - **Alert prioritization model** (classify urgency of events) <br> - **Predictive harvest readiness alerts** <br> - **Fault detection model** (sensor drift, actuator failure)                                      |
-| **IoT Connectivity & Edge Control**                | - ESP32 (Wi-Fi for bay-level control) <br> - LoRaWAN nodes + gateway for multi-bay farm <br> - MQTT broker (Mosquitto / AWS IoT / Azure IoT)                                                    | - **Local fallback control** if cloud is down <br> - **Bayesian optimization** for tuning setpoints <br> - **Anomaly detection** (Isolation Forest, clustering)                                                     |
+## Responsibilities & recommended hardware
 
+(Condensed table — full details in `docs/full-hardware.md`.)
 
+| Responsibility                | Hardware (sensors & actuators)                                        | Smart models / control algorithms                                        |
+| ----------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Climate control               | BME280/SHT31, SCD30, fans, heaters, vents (MOSFET/SSR)                | PID + MPC (cloud), VPD control, anomaly detection (IsolationForest)      |
+| Irrigation & water management | Capacitive soil probes, flow meters (YF-S201), solenoid valves, pumps | ET₀-aware scheduling (FAO-56), RandomForest/XGBoost irrigation regressor |
+| Lighting control              | BH1750 / PAR sensor, LED driver (PWM/0–10V)                           | DLI-driven scheduler, energy-aware optimizer                             |
+| Crop monitoring & vision      | ESP32-CAM / Pi Camera                                                 | Object detection (YOLOv8 small), ripeness classifier (MobileNet)         |
+| Yield prediction              | Sensor history, DLI, degree-days                                      | Gradient boosting (XGBoost/LightGBM) regression                          |
+| Alerts & UI                   | ESP32 (Wi-Fi/LoRa), Pi gateway, MQTT broker, Grafana/Streamlit        | Alert prioritization classifier, rule engine                             |
 
+---
 
+## Where models run (deployment split)
 
+* **ESP32 (edge)**: sensor reads, threshold safety rules, actuator driving, heartbeat & retries. *No heavy ML.*
+* **Raspberry Pi (local/gateway)**: lightweight ML inference (scikit-learn/XGBoost), sensor fusion, anomaly detection, small CV models if required (TinyYOLO / TensorFlow Lite). Acts as the primary runtime when cloud is unreachable.
+* **Cloud**: training, large-model inference (full YOLO, RL/MPC, LSTM), data lake, model registry, dashboards, multi-bay coordination.
 
+---
 
+## AI components & models (what to build first)
 
+**Priority (hackathon / 36-hour)**
 
-📌 Future Enhancements
+1. **Irrigation advisor** — RandomForest/XGBoost regressor that predicts soil moisture or time-to-threshold (predict soil θ in 6 hours). Outputs recommended irrigation volume & schedule.
+2. **Anomaly detector** — IsolationForest on multivariate sensor windows to flag stuck sensors or actuator failures.
+3. **Inference service** — lightweight Python service (FastAPI/Flask) on Raspberry Pi that subscribes to MQTT telemetry, runs models, and publishes commands/alerts.
 
-Integration with weather APIs for predictive control.
+**Stretch / cloud**
 
-Advanced computer vision for plant health monitoring.
+* Yield predictor (XGBoost / LightGBM).
+* Vision pipelines for fruit counting and ripeness (YOLOv8 small → Pi/Cloud).
+* MPC / RL for multi-actuator coordinated control (cloud training, Pi inference).
 
-Voice assistant support for farmers.
+---
 
-Solar-powered automation.
+## Data format (suggested telemetry JSON)
+
+```json
+{
+  "ts": "2025-08-30T09:30:00Z",
+  "bayId": "A1",
+  "env": {"T": 26.4, "RH": 72.1, "VPD": 0.9, "CO2": 850, "PPFD": 320},
+  "soil": {"theta": 0.29, "EC": 1.4, "T": 22.1},
+  "ext": {"T": 31.2, "RH": 60, "wind": 2.4, "solar": 700},
+  "actuators": {"fan": 0, "heater": 0, "irrigation": 0, "led": 0.7},
+  "et0": 4.2,
+  "alerts": []
+}
+```
+
+---
+
+## Quickstart — AI-side (run locally / on Pi)
+
+**Environment**
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install pandas numpy scikit-learn xgboost joblib fastapi uvicorn paho-mqtt streamlit
+```
+
+**Run the demo pipeline (synthetic data)**
+
+1. Place CSV in `data/` (synthetic dataset provided in `/data`).
+2. Train irrigation model: `python src/train_irrigation.py` (produces `models/irrigation_model.pkl`).
+3. Train anomaly detector: `python src/train_anomaly.py` (produces `models/anomaly_iforest.pkl`).
+4. Start MQTT broker (Mosquitto) on Pi: `sudo apt install mosquitto` then `sudo systemctl start mosquitto`.
+5. Start inference service: `python src/infer_service.py`.
+6. Stream demo telemetry: `python src/mqtt_publisher_demo.py`.
+7. Open dashboard: `streamlit run src/streamlit_dashboard.py`.
+
+---
+
+## 36-hour focused AI plan (what to deliver)
+
+* **Irrigation model + metrics** (MAE, simulated water saved).
+* **IsolationForest anomaly detector** (precision/recall on synthetic anomalies).
+* **Inference service (Pi-ready)** publishing to MQTT topics.
+* **Streamlit dashboard** showing telemetry, predictions, and alerts.
+* **Demo script** that plays synthetic telemetry at accelerated speed.
+
+---
+
+## MQTT topics (standardized)
+
+* `greenhouse/{bay}/telemetry` → raw JSON telemetry.
+* `greenhouse/{bay}/ml/irrigation` → model outputs (predicted soil, recommended liters).
+* `greenhouse/{bay}/alerts` → anomaly & critical alerts.
+* `greenhouse/{bay}/cmd/{actuator}` → actuator commands (from Pi or cloud).
+
+---
+
+## Safety & guardrails
+
+* Local fallback safety rules on ESP32 (hard cutoffs, min/max runtimes).
+* Actuator interlocks (no CO₂ enrichment while vents open).
+* Model & device heartbeats — Pi falls back to safe defaults if cloud unreachable.
+* Signed OTA & per-device credentials for production.
+
+---
+
+## File structure (repo)
+
+```
+/ (root)
+├─ data/                      # CSVs (synthetic + collected telemetry)
+├─ docs/                      # hardware lists, diagrams, deeper docs
+├─ models/                    # trained models (.pkl)
+├─ src/
+│  ├─ train_irrigation.py
+│  ├─ train_anomaly.py
+│  ├─ infer_service.py
+│  ├─ mqtt_publisher_demo.py
+│  └─ streamlit_dashboard.py
+├─ README.md                  # this file (AI-focused)
+└─ LICENSE
+```
+
+---
+
+## Future enhancements
+
+* Weather API integration for ET₀ forecasting and feedforward control.
+* Full CV pipeline for fruit counting & disease detection.
+* MPC / RL for multi-actuator coordination and energy optimization.
+* LoRaWAN integration for large-farm coverage and mesh-controlled nodes.
+
+---
+
+## Contributing
+
+If you add hardware, datasets, or new models, update `docs/full-hardware.md` and `docs/model-registry.md`. Create a clear `model-metadata.json` (name, version, sha256, trained-on-date).
+
+---
+
+## License
+
+MIT
+
+---
+
+> Want me to also add a short `docs/quick-demo.md` with step-by-step commands and a minimal slide deck for the hackathon presentation?
