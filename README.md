@@ -73,6 +73,24 @@ Adaptive Learning: System improves with usage by analyzing past patterns.
 
 Optimization: Reduces water/electricity usage while maximizing crop health.
 
+| Responsibility                                     | Hardware (sensors & actuators)                                                                                                                                                                  | Smart Models (AI/Control Algorithms)                                                                                                                                                                                |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Climate Control (Temp, Humidity, CO₂, Airflow)** | - Temp/Humidity: **BME280 / SHT31 / DHT22** <br> - CO₂: **SCD30 / MH-Z19B** <br> - Ventilation fans + MOSFET/relay <br> - Heater (PTC, resistive mats) <br> - Misters/humidifiers/dehumidifiers | - **PID control** for temp & humidity <br> - **Model Predictive Control (MPC)** with weather forecast <br> - **Adaptive VPD control** (vapor pressure deficit) <br> - **Anomaly detection** for stuck fans/heaters  |
+| **Irrigation & Water Management**                  | - Soil moisture: **capacitive probes (temp compensated)** <br> - Flow sensor: **YF-S201** <br> - Solenoid valves, DC pumps <br> - Water level float sensors                                     | - **ET₀-based scheduling** (FAO-56 Penman-Monteith) <br> - **Hybrid threshold + ET₀** irrigation <br> - **Random Forest regression** for irrigation prediction <br> - **Nutrient fertigation model** (optional)     |
+| **Lighting Control**                               | - Light sensor: **BH1750 / TSL2591** (budget) or **PAR quantum sensor** (Apogee SQ-500) <br> - LED grow lights w/ PWM dimming driver                                                            | - **DLI (Daily Light Integral)** scheduling <br> - **Energy optimization model** (balance natural + artificial light) <br> - Crop-stage-specific light schedules                                                    |
+| **CO₂ Enrichment**                                 | - NDIR CO₂ sensor (SCD30) <br> - CO₂ solenoid valves                                                                                                                                            | - Maintain setpoints w/ hysteresis <br> - **Feedforward model** (lockout when vents open) <br> - Crop-growth/yield correlation models                                                                               |
+| **Crop Growth Monitoring & Yield Prediction**      | - ESP32-CAM / Pi Camera <br> - Ultrasonic sensor for plant height <br> - Weight sensors for biomass                                                                                             | - **Computer Vision (YOLO, CNNs)** for leaf/fruit detection, ripeness <br> - **Growth regression models** (using DLI, degree-days, irrigation, CO₂) <br> - **Yield forecasting** (Gradient Boosting, Random Forest) |
+| **User Alerts & Interface**                        | - ESP32 Wi-Fi / LoRa nodes <br> - Cloud dashboard (Adafruit IO, ThingsBoard, Grafana) <br> - Mobile app/web UI                                                                                  | - **Alert prioritization model** (classify urgency of events) <br> - **Predictive harvest readiness alerts** <br> - **Fault detection model** (sensor drift, actuator failure)                                      |
+| **IoT Connectivity & Edge Control**                | - ESP32 (Wi-Fi for bay-level control) <br> - LoRaWAN nodes + gateway for multi-bay farm <br> - MQTT broker (Mosquitto / AWS IoT / Azure IoT)                                                    | - **Local fallback control** if cloud is down <br> - **Bayesian optimization** for tuning setpoints <br> - **Anomaly detection** (Isolation Forest, clustering)                                                     |
+
+
+
+
+
+
+
+
+
 📌 Future Enhancements
 
 Integration with weather APIs for predictive control.
