@@ -89,7 +89,7 @@ def safe_iso_ts(ts_val):
 
 # ---------- Read data ----------
 LOG.info("Reading data from %s", data_path)
-df = pd.read_csv(data_path, parse_dates=["ts"])
+df = pd.read_csv(data_path, parse_dates=['ts'])
 
 required_cols = {"ts", "T", "RH", "soil_theta", "PPFD", "CO2", "ext_T"}
 missing = required_cols - set(df.columns)

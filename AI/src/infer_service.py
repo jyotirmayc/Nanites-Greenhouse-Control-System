@@ -37,8 +37,14 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> dict:
 
 config = load_config()
 
-MQTT_BROKER = os.environ.get("MQTT_BROKER", config["inference"].get("mqtt_broker", "localhost"))
-MQTT_PORT = int(os.environ.get("MQTT_PORT", config["inference"].get("mqtt_port", 1883)))
+MQTT_BROKER = os.environ.get("MQTT_BROKER")
+if not MQTT_BROKER or MQTT_BROKER.startswith("${") or MQTT_BROKER == "${MQTT_BROKER:-localhost}":
+    MQTT_BROKER = config["inference"].get("mqtt_broker", "localhost")
+port_str = os.environ.get("MQTT_PORT", str(config["inference"].get("mqtt_port", 1883)))
+try:
+    MQTT_PORT = int(port_str)
+except ValueError:
+    MQTT_PORT = 1883  # fallback to default
 PUBLISH_CMDS = os.environ.get("PUBLISH_CMDS", "1").lower() in ("1", "true", "yes")
 SOIL_THRESHOLD = float(os.environ.get("SOIL_THRESHOLD", "0.30"))  # if pred_soil < this -> cmd
 CMD_EXPIRES_S = int(os.environ.get("CMD_EXPIRES_S", "120"))
@@ -149,8 +155,7 @@ def build_cmd(irrig_secs: int | None = None, fan_duty: float | None = None, sour
 # ----------------------
 # Ensure compatibility with paho-mqtt 2.x using v3-style callbacks
 client = mqtt.Client(
-    protocol=mqtt.MQTTv311,
-    callback_api_version=mqtt.CallbackAPIVersion.v3,
+    protocol=mqtt.MQTTv311
 )
 
 def on_connect(client, userdata, flags, rc):

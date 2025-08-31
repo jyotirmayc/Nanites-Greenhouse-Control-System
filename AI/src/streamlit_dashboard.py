@@ -5,6 +5,7 @@ import time
 import paho.mqtt.client as mqtt
 from threading import Thread, Lock
 import yaml
+import os
 from collections import deque
 
 # ---------------- Streamlit setup ----------------
@@ -45,7 +46,9 @@ with open(CONFIG_PATH, 'r') as f:
 MQTT_BROKER = config.get('inference', {}).get('mqtt_broker', 'localhost')
 MQTT_PORT = config.get('inference', {}).get('mqtt_port', 1883)
 MQTT_TOPIC = config.get('inference', {}).get('telemetry_topic', 'greenhouse/A1/telemetry')
-DATA_PATH = config.get('training', {}).get('data_path')
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))  # Only one dirname
+DATA_PATH = os.path.join(PROJECT_ROOT, "..", "data", "synthetic_greenhouse_7days_10min.csv")
+DATA_PATH = os.path.abspath(DATA_PATH)
 
 # Start MQTT thread
 Thread(target=mqtt_loop, args=(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC), daemon=True).start()
