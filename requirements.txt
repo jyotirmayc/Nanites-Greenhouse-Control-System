@@ -1,1 +1,7 @@
-kagglehub
+pandas
+numpy
+scikit-learn
+joblib
+paho-mqtt
+streamlit
+pyyaml

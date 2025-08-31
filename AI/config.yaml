@@ -1,0 +1,45 @@
+model:
+  irrigation:
+    type: RandomForestRegressor
+    path: ../models/irrigation_rf.pkl
+  anomaly:
+    type: IsolationForest
+    path: ../models/anomaly_iforest.pkl
+
+training:
+  data_path: ../data/synthetic_greenhouse_7days_10min.csv
+  irrigation_features:
+    - soil_lag1
+    - soil_roll_6
+    - ppfd_roll_6
+    - T
+    - RH
+    - ext_T
+    - hour
+  anomaly_features:
+    - T
+    - RH
+    - soil_theta
+    - PPFD
+    - CO2
+  contamination: 0.05
+  random_state: 42
+  horizon_steps: 36        # 36 steps × timestep_minutes = 6 hours (with 10-min timestep)
+  timestep_minutes: 10
+
+inference:
+  mqtt_broker: ${MQTT_BROKER:-localhost}
+  mqtt_port: ${MQTT_PORT:-1883}
+  telemetry_topic: greenhouse/A1/telemetry
+  irrigation_topic: greenhouse/A1/ml/irrigation
+  alert_topic: greenhouse/A1/alerts
+  cmd_topic: greenhouse/A1/cmd
+  publish_cmds: ${PUBLISH_CMDS:-1}    # 1/0 or true/false
+  soil_threshold: ${SOIL_THRESHOLD:-0.30}
+  cmd_expires_s: ${CMD_EXPIRES_S:-120}
+  mqtt_user: null
+  mqtt_pass: null
+
+logging:
+  file: ../logs/training.log
+  level: INFO
