@@ -154,6 +154,23 @@ void loop() {
   float ppfd = (float)light_raw/4095.0 * 100.0;
   float co2_proxy = (float)mq2_raw/4095.0 * 1000.0;
 
+  if (soil_vwc < 0.30) {  // less than 30% moisture
+    pump_state = true;
+    digitalWrite(PUMP_PIN, HIGH);
+  } 
+  else {
+    pump_state = false;
+    digitalWrite(PUMP_PIN, LOW);
+  }
+
+  if (temp > 28.0) {  // higher than 28 °C
+    fan_state = true;
+    digitalWrite(FAN_PIN, HIGH);
+  } 
+  else {
+    fan_state = false;
+    digitalWrite(FAN_PIN, LOW);
+  }
   // Display
   display.clearDisplay();
   display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
