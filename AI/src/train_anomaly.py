@@ -1,15 +1,46 @@
-import pandas as pd, joblib, os, json
-from sklearn.ensemble import IsolationForest
-os.makedirs("../models", exist_ok=True)
-df = pd.read_csv("../data/synthetic_greenhouse_7days_10min.csv", parse_dates=['ts'])
-df = df.sort_values('ts').reset_index(drop=True)
-anom_features = ['T','RH','soil_theta','PPFD','CO2']
-X = df[anom_features].fillna(method='ffill')
-split_idx = int(len(X)*0.8)
-iso = IsolationForest(contamination=0.01, random_state=42)
-iso.fit(X.iloc[:split_idx])
-joblib.dump(iso, "../models/anomaly_iforest.pkl")
-meta = {"model":"IsolationForest","contamination":0.01}
-with open("../models/anomaly_iforest_meta.json","w") as f:
-    json.dump(meta, f, indent=2)
-print("Saved ../models/anomaly_iforest.pkl")
+import os
+import sys
+import json
+import joblib
+import paho.mqtt.client as mqtt
+import pandas as pd
+
+MODEL_PATH = "../models/anomaly_iforest.pkl"
+META_PATH = "../models/anomaly_iforest_meta.json"
+BROKER = os.getenv("MQTT_BROKER", "localhost")
+PORT = int(os.getenv("MQTT_PORT", 1883))
+SUB_TOPIC = "greenhouse/sensors"
+PUB_TOPIC = "greenhouse/anomalies"
+
+# Load model + metadata
+iso = joblib.load(MODEL_PATH)
+with open(META_PATH) as f:
+    meta = json.load(f)
+anom_features = ["T", "RH", "soil_theta", "PPFD", "CO2"]
+
+def process_payload(payload: dict):
+    if not all(k in payload for k in anom_features):
+        return None  # skip invalid data
+    X = pd.DataFrame([[payload[k] for k in anom_features]], columns=anom_features)
+    y_pred = iso.predict(X)[0]  # 1=normal, -1=anomaly
+    return {"anomaly": int(y_pred == -1), "data": payload}
+
+def on_connect(client, userdata, flags, rc):
+    client.subscribe(SUB_TOPIC)
+
+def on_message(client, userdata, msg):
+    try:
+        payload = json.loads(msg.payload.decode())
+        result = process_payload(payload)
+        if result:
+            print("Result:", result)
+            client.publish(PUB_TOPIC, json.dumps(result))
+    except Exception as e:
+        print("Error:", e, file=sys.stderr)
+
+if __name__ == "__main__":
+    client = mqtt.Client()
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(BROKER, PORT, 60)
+    client.loop_forever()

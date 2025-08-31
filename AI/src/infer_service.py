@@ -1,46 +1,267 @@
-import json, joblib, os
-import paho.mqtt.client as mqtt
-import pandas as pd
+# infer_service.py
+# Improved inference + alert + optional cmd publisher for greenhouse demo
+# Usage:
+#   set env MQTT_BROKER, MQTT_PORT, PUBLISH_CMDS (1/0), SOIL_THRESHOLD (0-1), CMD_EXPIRES_S
+#   python infer_service.py
 
-MQTT_BROKER = os.environ.get("MQTT_BROKER","localhost")
+import os
+import json
+import uuid
+import time
+import joblib
+import logging
+import traceback
+from datetime import datetime, timezone, timedelta
+
+import pandas as pd
+import paho.mqtt.client as mqtt
+
+# ----------------------
+# Configuration (env)
+# ----------------------
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", 1883))
+PUBLISH_CMDS = os.environ.get("PUBLISH_CMDS", "1").lower() in ("1", "true", "yes")
+SOIL_THRESHOLD = float(os.environ.get("SOIL_THRESHOLD", "0.30"))  # if pred_soil < this -> cmd
+CMD_EXPIRES_S = int(os.environ.get("CMD_EXPIRES_S", "120"))
+LOG_DIR = os.environ.get("LOG_DIR", "../logs")
+MODEL_DIR = os.environ.get("MODEL_DIR", "../models")
+
 TOPIC_TELE = "greenhouse/A1/telemetry"
 TOPIC_IRR = "greenhouse/A1/ml/irrigation"
 TOPIC_ALERT = "greenhouse/A1/alerts"
+TOPIC_CMD = "greenhouse/A1/cmd"
 
-# load models
-rf = joblib.load("../models/irrigation_rf.pkl")
-iso = joblib.load("../models/anomaly_iforest.pkl")
+MODEL_IRR = os.path.join(MODEL_DIR, "irrigation_rf.pkl")
+MODEL_ANOM = os.path.join(MODEL_DIR, "anomaly_iforest.pkl")
 
+# ----------------------
+# Logging setup
+# ----------------------
+os.makedirs(LOG_DIR, exist_ok=True)
+log_path = os.path.join(LOG_DIR, "infer_service.log")
+
+logger = logging.getLogger("infer_service")
+logger.setLevel(logging.DEBUG)
+fmt = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
+
+fh = logging.FileHandler(log_path)
+fh.setLevel(logging.DEBUG)
+fh.setFormatter(fmt)
+logger.addHandler(fh)
+
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+ch.setFormatter(fmt)
+logger.addHandler(ch)
+
+logger.info("Starting infer_service")
+logger.info(f"MQTT broker = {MQTT_BROKER}:{MQTT_PORT}, publish_cmds = {PUBLISH_CMDS}")
+
+# ----------------------
+# Load models
+# ----------------------
+if not os.path.exists(MODEL_IRR) or not os.path.exists(MODEL_ANOM):
+    logger.error(f"Model files not found in {MODEL_DIR}. Expected: irrigation_rf.pkl and anomaly_iforest.pkl")
+    raise SystemExit("Missing model files. Train models or place them in ../models")
+
+try:
+    rf = joblib.load(MODEL_IRR)
+    iso = joblib.load(MODEL_ANOM)
+    logger.info("Loaded models successfully.")
+except Exception as e:
+    logger.error("Failed to load models: %s", e)
+    logger.error(traceback.format_exc())
+    raise
+
+# ----------------------
+# Utility functions
+# ----------------------
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def safe_parse_ts(ts_val):
+    if ts_val is None:
+        return now_iso()
+    try:
+        # if it looks numeric (secs since epoch)
+        if isinstance(ts_val, (int, float)):
+            return datetime.fromtimestamp(ts_val, timezone.utc).isoformat()
+        return pd.to_datetime(ts_val).tz_localize(None).isoformat()
+    except Exception:
+        return now_iso()
+
+def duration_from_delta(delta, min_sec=8, max_sec=60):
+    """
+    Heuristic mapping: 0.01 VWC deficit -> ~15s; scale and clamp
+    """
+    if delta <= 0:
+        return 0
+    secs = (delta / 0.01) * 15.0
+    secs = max(min_sec, min(max_sec, secs))
+    return int(secs)
+
+def build_cmd(irrig_secs=None, fan_duty=None, source="cloud"):
+    cmd = {
+        "ts": now_iso(),
+        "source": source,
+        "cmd_id": str(uuid.uuid4()),
+        "actions": {},
+        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=CMD_EXPIRES_S)).isoformat()
+    }
+    if irrig_secs and irrig_secs > 0:
+        cmd["actions"]["irrigation"] = {"action": "on", "duration_s": int(irrig_secs)}
+    if fan_duty is not None:
+        cmd["actions"]["fan"] = {"action": "set", "duty": float(fan_duty)}
+    return cmd
+
+# ----------------------
+# MQTT callbacks
+# ----------------------
 client = mqtt.Client()
-client.connect(MQTT_BROKER, 1883, 60)
+
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        logger.info("Connected to MQTT broker.")
+        client.subscribe(TOPIC_TELE)
+        logger.info("Subscribed to topic: %s", TOPIC_TELE)
+    else:
+        logger.error("Failed to connect to MQTT, return code %d", rc)
+
+def on_disconnect(client, userdata, rc):
+    logger.warning("Disconnected from MQTT (rc=%s).", rc)
 
 def compute_features(payload):
-    # expects payload keys: T,RH,soil_theta,PPFD,ext_T,ts
-    return {
-        'soil_lag1': payload.get('soil_theta_prev', payload['soil_theta']),
-        'soil_roll_6': payload.get('soil_roll_6', payload['soil_theta']),
-        'ppfd_roll_6': payload.get('ppfd_roll_6', payload['PPFD']),
-        'T': payload['T'], 'RH': payload['RH'], 'ext_T': payload['ext_T'],
-        'hour': pd.to_datetime(payload['ts']).hour + pd.to_datetime(payload['ts']).minute/60.0
-    }
+    """
+    Safe feature building. Expects payload to be dict with optional keys.
+    Returns None if essential inputs missing.
+    """
+    try:
+        # essential: soil_theta, T, RH
+        soil = payload.get("soil_theta", payload.get("soil", None))
+        T = payload.get("T", None)
+        RH = payload.get("RH", None)
+        PPFD = payload.get("PPFD", payload.get("light", 0.0))
+        ext_T = payload.get("ext_T", T if T is not None else 0.0)
+        ts = payload.get("ts", None)
+
+        if soil is None or T is None or RH is None:
+            missing = [k for k in ("soil_theta","T","RH") if payload.get(k, None) is None]
+            logger.warning("Telemetry missing essential keys: %s", missing)
+            return None
+
+        soil_lag1 = payload.get("soil_theta_prev", soil)
+        soil_roll_6 = payload.get("soil_roll_6", soil)
+        ppfd_roll_6 = payload.get("ppfd_roll_6", PPFD)
+        hour = pd.to_datetime(safe_parse_ts(ts)).hour + pd.to_datetime(safe_parse_ts(ts)).minute / 60.0
+
+        feats = {
+            "soil_lag1": soil_lag1,
+            "soil_roll_6": soil_roll_6,
+            "ppfd_roll_6": ppfd_roll_6,
+            "T": T,
+            "RH": RH,
+            "ext_T": ext_T,
+            "hour": hour
+        }
+        return feats
+    except Exception as e:
+        logger.error("Error computing features: %s", e)
+        logger.error(traceback.format_exc())
+        return None
 
 def on_message(client, userdata, msg):
     try:
-        payload = json.loads(msg.payload.decode())
-        feats = compute_features(payload)
-        X = [[feats['soil_lag1'], feats['soil_roll_6'], feats['ppfd_roll_6'],
-              feats['T'], feats['RH'], feats['ext_T'], feats['hour']]]
-        pred_soil = float(rf.predict(X)[0])
-        client.publish(TOPIC_IRR, json.dumps({"ts": payload['ts'], "pred_soil_6h": pred_soil}))
-        # anomaly check
-        anom_features = [payload['T'], payload['RH'], payload['soil_theta'], payload['PPFD'], payload['CO2']]
-        is_anom = iso.predict([anom_features])[0] == -1
-        if is_anom:
-            client.publish(TOPIC_ALERT, json.dumps({"ts":payload['ts'], "type":"anomaly", "msg":"anomaly detected"}))
+        payload_raw = msg.payload.decode()
+        payload = json.loads(payload_raw)
     except Exception as e:
-        print("Error in on_message:", e)
+        logger.error("Failed to parse JSON payload: %s; raw: %s", e, msg.payload)
+        return
 
-client.subscribe(TOPIC_TELE)
+    ts = safe_parse_ts(payload.get("ts"))
+    logger.debug("Received telemetry ts=%s payload_keys=%s", ts, list(payload.keys()))
+
+    feats = compute_features(payload)
+    if feats is None:
+        logger.info("Skipping inference due to missing features.")
+        return
+
+    try:
+        X = [[
+            feats['soil_lag1'],
+            feats['soil_roll_6'],
+            feats['ppfd_roll_6'],
+            feats['T'],
+            feats['RH'],
+            feats['ext_T'],
+            feats['hour']
+        ]]
+        pred_soil = float(rf.predict(X)[0])
+        irr_msg = {"ts": ts, "pred_soil_6h": pred_soil}
+        client.publish(TOPIC_IRR, json.dumps(irr_msg))
+        logger.info("Published prediction pred_soil_6h=%.4f to %s", pred_soil, TOPIC_IRR)
+
+        # anomaly detection (safe vector with defaults)
+        anom_vec = [
+            payload.get("T", 0.0),
+            payload.get("RH", 0.0),
+            payload.get("soil_theta", 0.0),
+            payload.get("PPFD", 0.0),
+            payload.get("CO2", 0.0)
+        ]
+        try:
+            is_anom = iso.predict([anom_vec])[0] == -1
+        except Exception as e:
+            logger.error("Anomaly model error: %s", e)
+            is_anom = False
+
+        if is_anom:
+            alert = {"ts": ts, "type": "anomaly", "msg": "anomaly detected by isoFOREST"}
+            client.publish(TOPIC_ALERT, json.dumps(alert))
+            logger.warning("Published anomaly alert: %s", alert)
+
+        # Optionally publish actionable command when pred_soil below threshold
+        if PUBLISH_CMDS and pred_soil < SOIL_THRESHOLD:
+            deficit = SOIL_THRESHOLD - pred_soil
+            secs = duration_from_delta(deficit)
+            if secs > 0:
+                cmd = build_cmd(irrig_secs=secs, source="cloud")
+                client.publish(TOPIC_CMD, json.dumps(cmd))
+                logger.info("Published CMD (irrigation %ds) cmd_id=%s", secs, cmd["cmd_id"])
+
+    except Exception as e:
+        logger.error("Error running inference or publishing results: %s", e)
+        logger.error(traceback.format_exc())
+
+# ----------------------
+# MQTT client setup
+# ----------------------
+client.on_connect = on_connect
+client.on_disconnect = on_disconnect
 client.on_message = on_message
-print("Inference service running. Subscribed to", TOPIC_TELE, "broker:", MQTT_BROKER)
-client.loop_forever()
+
+def run():
+    try:
+        client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+    except Exception as e:
+        logger.error("Unable to connect to MQTT broker %s:%d - %s", MQTT_BROKER, MQTT_PORT, e)
+        raise
+
+    client.loop_start()
+    logger.info("MQTT loop started. Waiting for telemetry...")
+
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received. Shutting down.")
+    except Exception as e:
+        logger.error("Fatal error in main loop: %s", e)
+        logger.error(traceback.format_exc())
+    finally:
+        client.loop_stop()
+        client.disconnect()
+        logger.info("Clean shutdown complete.")
+
+if __name__ == "__main__":
+    run()
