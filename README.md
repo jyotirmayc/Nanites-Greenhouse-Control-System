@@ -1,54 +1,3 @@
-## System Workflow Flowchart
-
-```mermaid
-flowchart TD
-  subgraph Sensors & Actuators
-    S1[ESP32: Read Sensors]
-    S2[ESP32: Local Safety Rules]
-    S3[ESP32: Publish Telemetry to MQTT]
-    S4[ESP32: Subscribe to Command Topic]
-    S5[ESP32: Actuate Devices]
-  end
-
-  subgraph Edge (Raspberry Pi)
-    P1[Pi: Subscribe to Telemetry]
-    P2[Pi: Run ML Models (Fallback)]
-    P3[Pi: Publish Commands to ESP32]
-    P4[Pi: Persist Telemetry & Models]
-    P5[Pi: Host Mosquitto Broker (Optional)]
-  end
-
-  subgraph Cloud
-    C1[Cloud: Train Heavy Models]
-    C2[Cloud: Run Primary Inference]
-    C3[Cloud: Publish Commands to Pi/ESP32]
-    C4[Cloud: Dashboard & Analytics]
-    C5[Cloud: Push Model Updates]
-  end
-
-  S1 --> S2
-  S2 --> S3
-  S3 --> P1
-  P1 --> P2
-  P2 --> P3
-  P3 --> S4
-  S4 --> S5
-  S3 --> C2
-  C2 --> C3
-  C3 --> S4
-  C3 --> P3
-  S1 --> S5
-  C1 --> C2
-  C2 --> C4
-  C1 --> C5
-  C5 --> P4
-  P4 --> P2
-
-  %% Failover logic
-  C3 -.->|If Cloud Unavailable| P3
-  P3 -.->|If Pi Unavailable| S2
-  S2 -.->|Emergency/No Command| S5
-```
 # IOTricity\_Nanites
 
 
@@ -123,6 +72,57 @@ The repository contains the AI components (training, inference services, demo pi
 
 ---
 
+## System Workflow Flowchart
+
+```mermaid
+flowchart TD
+  subgraph Sensors_Actuators
+    S1[ESP32: Read Sensors]
+    S2[ESP32: Local Safety Rules]
+    S3[ESP32: Publish Telemetry to MQTT]
+    S4[ESP32: Subscribe to Command Topic]
+    S5[ESP32: Actuate Devices]
+  end
+
+  subgraph Edge_Raspberry_Pi
+    P1[Pi: Subscribe to Telemetry]
+    P2[Pi: Run ML Models (Fallback)]
+    P3[Pi: Publish Commands to ESP32]
+    P4[Pi: Persist Telemetry & Models]
+    P5[Pi: Host Mosquitto Broker]
+  end
+
+  subgraph Cloud
+    C1[Cloud: Train Heavy Models]
+    C2[Cloud: Run Primary Inference]
+    C3[Cloud: Publish Commands to Pi/ESP32]
+    C4[Cloud: Dashboard & Analytics]
+    C5[Cloud: Push Model Updates]
+  end
+
+  S1 --> S2
+  S2 --> S3
+  S3 --> P1
+  P1 --> P2
+  P2 --> P3
+  P3 --> S4
+  S4 --> S5
+  S3 --> C2
+  C2 --> C3
+  C3 --> S4
+  C3 --> P3
+  S1 --> S5
+  C1 --> C2
+  C2 --> C4
+  C1 --> C5
+  C5 --> P4
+  P4 --> P2
+
+  %% Failover logic
+  C3 -.->|If Cloud Unavailable| P3
+  P3 -.->|If Pi Unavailable| S2
+  S2 -.->|Emergency/No Command| S5
+```
 
 ## System Architecture & Responsibility Split
 
