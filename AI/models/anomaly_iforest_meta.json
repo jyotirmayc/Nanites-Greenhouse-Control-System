@@ -1,0 +1,4 @@
+{
+  "model": "IsolationForest",
+  "contamination": 0.01
+}
