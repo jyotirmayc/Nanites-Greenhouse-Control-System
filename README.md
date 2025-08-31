@@ -86,7 +86,7 @@ flowchart TD
 
   subgraph Edge_Raspberry_Pi
     P1[Pi: Subscribe to Telemetry]
-    P2[Pi: Run ML Models (Fallback)]
+    P2[Pi: Run ML Models - Fallback]
     P3[Pi: Publish Commands to ESP32]
     P4[Pi: Persist Telemetry & Models]
     P5[Pi: Host Mosquitto Broker]
@@ -121,7 +121,7 @@ flowchart TD
   %% Failover logic
   C3 -.->|If Cloud Unavailable| P3
   P3 -.->|If Pi Unavailable| S2
-  S2 -.->|Emergency/No Command| S5
+  S2 -.->|Emergency or No Command| S5
 ```
 
 ## System Architecture & Responsibility Split
