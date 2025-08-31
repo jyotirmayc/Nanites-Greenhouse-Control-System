@@ -1,0 +1,43 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.env
+.env*
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+.settings/
+
+# Data & Models
+*.csv
+*.h5
+*.pkl
+*.joblib
+models/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.pid
+
+# Streamlit
+.streamlit/
+
+# Misc
+*.bak
+*.swp
+*.tmp
+
+# Ignore test outputs
+/test_outputs/
