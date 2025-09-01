@@ -33,7 +33,8 @@ config = load_config()
 
 MQTT_BROKER = os.environ.get("MQTT_BROKER")
 if not MQTT_BROKER or MQTT_BROKER.startswith("${") or MQTT_BROKER == "${MQTT_BROKER:-localhost}":
-    MQTT_BROKER = config["inference"].get("mqtt_broker", "localhost")
+    # Use public broker for cloud deployment compatibility
+    MQTT_BROKER = "broker.hivemq.com"  # Changed from localhost to public broker
 port_str = os.environ.get("MQTT_PORT", str(config["inference"].get("mqtt_port", 1883)))
 try:
     MQTT_PORT = int(port_str)

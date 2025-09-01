@@ -9,7 +9,7 @@ model:
 model_dir: ../models  # Added for pi_fallback.py and cloud_controller.py
 
 training:
-  data_path: ../data/synthetic_greenhouse_7days_10min.csv  # Path relative to AI/src/ directory
+  data_path: data/synthetic_greenhouse_7days_10min.csv  # Path relative to AI/ directory
   irrigation_features:
     - soil_lag1
     - soil_roll_6
@@ -42,7 +42,7 @@ fallback:  # Added for pi_fallback.py
   cloud_timeout_s: 90
 
 inference:
-  mqtt_broker: "localhost"
+  mqtt_broker: "broker.hivemq.com"
   mqtt_port: 1883
   telemetry_topic: "greenhouse/A1/telemetry"
   irrigation_topic: "greenhouse/A1/pred"

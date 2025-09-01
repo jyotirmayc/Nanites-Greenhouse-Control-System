@@ -14,7 +14,7 @@ from utils import load_config
 cfg = load_config("../config.yaml")
 MODEL_DIR = cfg['model_dir']
 BAY = "A1"
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "broker.hivemq.com")
 TOP_TELE = f"greenhouse/{BAY}/telemetry"
 TOP_CMD = f"greenhouse/{BAY}/cmd"
 TOP_CMD_CLOUD = f"greenhouse/{BAY}/cmd"

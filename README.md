@@ -12,17 +12,28 @@
 
 ```powershell
 # 1. Setup environment
-python -m venv .venv && .venv\Scripts\Activate.ps1 && pip install -r requirements.txt
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 
 # 2. Start MQTT broker
 docker run -d --name mosquitto -p 1883:1883 eclipse-mosquitto:latest
 
 # 3. Train AI models & start services
 cd AI/src
-python generate_synthetic.py && python train_irrigation.py && python train_anomaly.py
-python infer_service.py &  # Terminal 1: AI Brain
-python mqtt_publisher_demo.py &  # Terminal 2: Sensor Data
-streamlit run streamlit_dashboard.py  # Terminal 3: Dashboard → http://localhost:8501
+python generate_synthetic.py
+python train_irrigation.py
+python train_anomaly.py
+
+# 4. Start services (in separate terminals)
+# Terminal 1: AI Brain
+python infer_service.py
+
+# Terminal 2: Sensor Data Simulation  
+python mqtt_publisher_demo.py
+
+# Terminal 3: Dashboard → http://localhost:8501
+streamlit run streamlit_dashboard.py
 ```
 
 ## ⚡ Key Features
@@ -121,4 +132,4 @@ IOTricity_Nanites/
 - **[Hardware Setup](./Hardware/Arduino/)** - ESP32 code, pinout diagrams, BOM
 - **[AI Pipeline](./AI/)** - Model training, inference services, configuration
 
-**Status**: Ready for deployment in commercial greenhouse operations.
+**Status**: Ready for deployment in commercial greenhouse operations.gg

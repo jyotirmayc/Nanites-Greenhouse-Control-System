@@ -138,13 +138,18 @@ void connectMQTT() {
   mqtt.setCallback(mqttCallback);
   while (!mqtt.connected()) {
     String clientId = String("esp32-") + BAY + "-" + String(random(0xffff), HEX);
+    Serial.print("Attempting MQTT connection with client ID: ");
+    Serial.println(clientId);
     if (mqtt.connect(clientId.c_str())) {
-      Serial.println("MQTT connected!");
+      Serial.println("✅ MQTT connected!");
+      Serial.print("📡 Broker: "); Serial.print(MQTT_BROKER); Serial.print(":"); Serial.println(MQTT_PORT);
       // Subscribe to command topic
       mqtt.subscribe(TOP_CMD.c_str());
-      Serial.print("Subscribed to: "); Serial.println(TOP_CMD);
+      Serial.print("✅ Subscribed to: "); Serial.println(TOP_CMD);
+      Serial.print("📤 Publishing telemetry to: "); Serial.println(TOP_TELE);
     } else {
-      Serial.print("MQTT failed, rc="); Serial.println(mqtt.state());
+      Serial.print("❌ MQTT failed, rc="); Serial.println(mqtt.state());
+      Serial.println("Retrying in 1 second...");
       delay(1000);
     }
   }
@@ -160,6 +165,7 @@ void publishTelemetry(float T, float RH, float soil_vwc, float ppfd, float co2_p
   doc["soil_theta"] = soil_vwc;
   doc["PPFD"] = ppfd;
   doc["CO2"] = co2_proxy;
+  doc["ext_T"] = T + random(-2, 3);  // Add ext_T field (external temp simulation)
   
   char buf[512]; size_t n = serializeJson(doc, buf);
   mqtt.publish(TOP_TELE.c_str(), buf, n);
@@ -239,6 +245,11 @@ void loop() {
   // Publish telemetry
   if (now - lastTeleMs >= TELEMETRY_INTERVAL_MS) {
     lastTeleMs = now;
+    Serial.print("Sensor readings - T:"); Serial.print(temp);
+    Serial.print(" RH:"); Serial.print(hum); 
+    Serial.print(" Soil:"); Serial.print(soil_vwc);
+    Serial.print(" PPFD:"); Serial.print(ppfd);
+    Serial.print(" CO2:"); Serial.println(co2_proxy);
     publishTelemetry(temp, hum, soil_vwc, ppfd, co2_proxy);
   }
 

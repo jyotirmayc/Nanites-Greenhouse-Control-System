@@ -12,7 +12,7 @@ from utils import load_config, read_csv  # reuse your utils
 cfg = load_config("config.yaml")
 MODEL_DIR = cfg['model_dir']
 BAY = "A1"
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")
+MQTT_BROKER = os.environ.get("MQTT_BROKER", "broker.hivemq.com")
 TOPIC_TELE = f"greenhouse/{BAY}/telemetry"
 TOPIC_CMD  = f"greenhouse/{BAY}/cmd"
 TOPIC_ALERT = f"greenhouse/{BAY}/alerts"

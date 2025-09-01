@@ -55,8 +55,8 @@ if not data_path.is_absolute():
 if not data_path.exists():
     raise SystemExit(f"Data file not found: {data_path}")
 
-TOPIC_TELE = config.get("inference", {}).get("telemetry_topic", "greenhouse/A1/tele")
-BROKER = os.environ.get("MQTT_BROKER", config.get("inference", {}).get("mqtt_broker", "localhost"))
+TOPIC_TELE = config.get("inference", {}).get("telemetry_topic", "greenhouse/A1/telemetry")
+BROKER = os.environ.get("MQTT_BROKER", config.get("inference", {}).get("mqtt_broker", "broker.hivemq.com"))
 MQTT_PORT = int(os.environ.get("MQTT_PORT", config.get("inference", {}).get("mqtt_port", 1883)))
 PUBLISH_RATE = float(os.environ.get("PUBLISH_RATE", "0.1"))  # seconds between messages
 QOS = int(os.environ.get("MQTT_QOS", "1"))
