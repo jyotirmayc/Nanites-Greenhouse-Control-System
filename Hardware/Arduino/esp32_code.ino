@@ -53,6 +53,10 @@ PubSubClient mqtt(espClient);
 bool pump_state = false;
 bool fan_state = false;
 
+// AI Control tracking
+bool ai_mode = false;  // When true, AI controls actuators, not local logic
+unsigned long pump_end_time = 0;  // When to turn off irrigation pump
+
 // Timing
 unsigned long lastTeleMs = 0;
 unsigned long lastHeartbeatMs = 0;
@@ -98,10 +102,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
         JsonObject irrig = actions["irrigation"];
         if (irrig["action"] == "on") {
           int duration = irrig["duration_s"];
+          ai_mode = true;  // Enable AI control mode
           pump_state = true;
+          pump_end_time = millis() + (duration * 1000);  // Set end time
           digitalWrite(PUMP_PIN, HIGH);
-          Serial.print("IRRIGATION ON for "); Serial.print(duration); Serial.println("s");
-          // Note: In a real implementation, you'd use a timer to turn off after duration
+          Serial.print("🤖 AI IRRIGATION ON for "); Serial.print(duration); Serial.println("s");
         }
       }
       
@@ -110,17 +115,20 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
         JsonObject fan_cmd = actions["fan"];
         if (fan_cmd["action"] == "set") {
           float duty = fan_cmd["duty"];
+          ai_mode = true;  // Enable AI control mode
           fan_state = (duty > 0.5);
           digitalWrite(FAN_PIN, fan_state ? HIGH : LOW);
-          Serial.print("FAN SET to duty: "); Serial.println(duty);
+          Serial.print("🤖 AI FAN SET to duty: "); Serial.println(duty);
         }
       }
       
       // Handle safety mode
       if (actions.containsKey("safety")) {
-        Serial.println("SAFETY MODE ACTIVATED");
+        Serial.println("🚨 AI SAFETY MODE ACTIVATED");
+        ai_mode = true;  // Enable AI control mode
         // Turn off pump, turn on fan
         pump_state = false;
+        pump_end_time = 0;  // Cancel any irrigation timer
         fan_state = true;
         digitalWrite(PUMP_PIN, LOW);
         digitalWrite(FAN_PIN, HIGH);
@@ -217,22 +225,44 @@ void loop() {
   float ppfd = (float)light_raw/4095.0 * 100.0;
   float co2_proxy = (float)mq2_raw/4095.0 * 1000.0;
 
-  if (soil_vwc < 0.30) {  // less than 30% moisture
-    pump_state = true;
-    digitalWrite(PUMP_PIN, HIGH);
-  } 
-  else {
+  // 🤖 AI CONTROL LOGIC - Check irrigation timer
+  if (pump_end_time > 0 && now >= pump_end_time) {
     pump_state = false;
+    pump_end_time = 0;
     digitalWrite(PUMP_PIN, LOW);
+    Serial.println("🤖 AI IRRIGATION TIMER COMPLETE - Pump OFF");
   }
+  
+  // LOCAL FALLBACK CONTROL (only when AI not active)
+  if (!ai_mode) {
+    if (soil_vwc < 0.30) {  // less than 30% moisture
+      pump_state = true;
+      digitalWrite(PUMP_PIN, HIGH);
+    } 
+    else {
+      pump_state = false;
+      digitalWrite(PUMP_PIN, LOW);
+    }
 
-  if (temp > 28.0) {  // higher than 28 °C
-    fan_state = true;
-    digitalWrite(FAN_PIN, HIGH);
-  } 
-  else {
-    fan_state = false;
-    digitalWrite(FAN_PIN, LOW);
+    if (temp > 28.0) {  // higher than 28 °C
+      fan_state = true;
+      digitalWrite(FAN_PIN, HIGH);
+    } 
+    else {
+      fan_state = false;
+      digitalWrite(FAN_PIN, LOW);
+    }
+  }
+  
+  // Reset AI mode after some time to allow local fallback (optional)
+  static unsigned long ai_mode_start = 0;
+  if (ai_mode && ai_mode_start == 0) {
+    ai_mode_start = now;
+  }
+  if (ai_mode && (now - ai_mode_start > 300000)) { // 5 minutes timeout
+    ai_mode = false;
+    ai_mode_start = 0;
+    Serial.println("🔄 AI mode timeout - returning to local control");
   }
   // Display
   display.clearDisplay();
@@ -240,6 +270,11 @@ void loop() {
   display.setCursor(0,0); display.printf("T: %.1fC RH: %.0f%%", temp, hum);
   display.setCursor(0,10); display.printf("Soil: %.3f", soil_vwc);
   display.setCursor(0,20); display.printf("Fan:%s Pump:%s", fan_state?"ON":"OFF", pump_state?"ON":"OFF");
+  display.setCursor(0,30); display.printf("Mode: %s", ai_mode?"AI":"LOCAL");
+  if (pump_end_time > 0) {
+    int remaining = (pump_end_time - now) / 1000;
+    display.setCursor(0,40); display.printf("Irrig: %ds", remaining);
+  }
   display.display();
 
   // Publish telemetry

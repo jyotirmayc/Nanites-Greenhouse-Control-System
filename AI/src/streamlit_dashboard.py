@@ -56,41 +56,8 @@ MQTT_CMD_TOPIC = cfg.get("inference", {}).get("cmd_topic", "greenhouse/A1/cmd")
 DATA_CSV_PATH = cfg.get("training", {}).get("data_path",
                                            str(THIS_DIR.parent / "data" / "synthetic_greenhouse_7days_10min.csv"))
 
-# AI Control Configuration
+# Configuration for dashboard only
 MODEL_DIR = THIS_DIR.parent / "models"
-IRRIGATION_MODEL_PATH = MODEL_DIR / "irrigation_rf.pkl"
-ANOMALY_MODEL_PATH = MODEL_DIR / "anomaly_iforest.pkl"
-
-# Control thresholds
-SOIL_MIN = 0.28
-SOIL_TARGET = 0.32
-T_SET = 24.0
-T_DEADBAND = 1.0
-IRRIGATION_MIN_SEC = 8
-IRRIGATION_MAX_SEC = 60
-CMD_EXPIRES_S = 180
-
-# Load AI models for command generation
-irrigation_model = None
-anomaly_model = None
-
-try:
-    if IRRIGATION_MODEL_PATH.exists():
-        irrigation_model = joblib.load(IRRIGATION_MODEL_PATH)
-        LOG.info("Loaded irrigation model from %s", IRRIGATION_MODEL_PATH)
-    else:
-        LOG.warning("Irrigation model not found at %s", IRRIGATION_MODEL_PATH)
-except Exception as e:
-    LOG.error("Failed to load irrigation model: %s", e)
-
-try:
-    if ANOMALY_MODEL_PATH.exists():
-        anomaly_model = joblib.load(ANOMALY_MODEL_PATH)
-        LOG.info("Loaded anomaly model from %s", ANOMALY_MODEL_PATH)
-    else:
-        LOG.warning("Anomaly model not found at %s", ANOMALY_MODEL_PATH)
-except Exception as e:
-    LOG.error("Failed to load anomaly model: %s", e)
 
 # Buffer settings
 MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", "1000"))
@@ -99,6 +66,7 @@ MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", "1000"))
 data_queue = deque(maxlen=MAX_MESSAGES)
 data_lock = Lock()
 _stop_flag = False  # used for graceful shutdown of background thread
+mqtt_client = None  # Global MQTT client for command publishing
 
 # ---------- Helpers ----------
 def safe_float(v, default=0.0):
@@ -159,96 +127,6 @@ def normalize_for_plot(df, columns):
             out[col] = (out[col] - mn) / (mx - mn) * 100.0
     return out
 
-# ---------- AI Control Functions ----------
-def now_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-def duration_from_delta(delta):
-    """Map predicted deficit to irrigation seconds"""
-    if delta <= 0:
-        return 0
-    secs = (delta / 0.01) * 15.0
-    secs = max(IRRIGATION_MIN_SEC, min(IRRIGATION_MAX_SEC, secs))
-    return int(secs)
-
-def make_cmd(actions, source="cloud"):
-    """Create MQTT command JSON"""
-    cmd = {
-        "ts": now_iso(),
-        "source": source,
-        "cmd_id": str(uuid.uuid4()),
-        "actions": actions,
-        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=CMD_EXPIRES_S)).isoformat()
-    }
-    return cmd
-
-def decide_actions_from_telemetry(payload):
-    """AI decision logic - returns (actions dict, pred_soil)"""
-    if not irrigation_model or not anomaly_model:
-        return {}, 0.0
-        
-    try:
-        # Extract sensor data
-        soil = safe_float(payload.get('soil_theta', 0))
-        t = safe_float(payload.get('T', 20))
-        rh = safe_float(payload.get('RH', 50))
-        ppfd = safe_float(payload.get('PPFD', 0))
-        co2 = safe_float(payload.get('CO2', 400))
-        ext_T = safe_float(payload.get('ext_T', t))
-        
-        # Build features for irrigation model
-        soil_lag1 = payload.get('soil_theta_prev', soil)
-        soil_roll_6 = payload.get('soil_roll_6', soil)  
-        ppfd_roll_6 = payload.get('ppfd_roll_6', ppfd)
-        hour = pd.to_datetime(payload.get('ts')).hour if payload.get('ts') else datetime.now().hour
-
-        X = [[soil_lag1, soil_roll_6, ppfd_roll_6, t, rh, ext_T, hour]]
-        pred_soil_6h = float(irrigation_model.predict(X)[0])
-
-        actions = {}
-
-        # Irrigation decision
-        if pred_soil_6h < SOIL_MIN:
-            delta = SOIL_TARGET - pred_soil_6h
-            secs = duration_from_delta(delta)
-            if secs > 0:
-                actions['irrigation'] = {"action": "on", "duration_s": secs}
-
-        # Temperature control
-        if t > T_SET + T_DEADBAND:
-            actions['fan'] = {"action": "set", "duty": 1.0}
-        elif t < T_SET - T_DEADBAND:
-            actions['fan'] = {"action": "set", "duty": 0.0}
-
-        # Anomaly detection
-        anom_input = [[t, rh, soil, ppfd, co2]]
-        is_anom = anomaly_model.predict(anom_input)[0] == -1
-        if is_anom:
-            actions.setdefault('fan', {"action": "set", "duty": 1.0})
-            actions['safety'] = {"action": "safe_mode"}
-            LOG.warning("Anomaly detected! Activating safety mode.")
-
-        return actions, pred_soil_6h
-        
-    except Exception as e:
-        LOG.error("Error in AI decision logic: %s", e)
-        return {}, 0.0
-
-def publish_command(client, actions):
-    """Publish AI command to ESP32"""
-    if not actions:
-        return
-        
-    try:
-        cmd = make_cmd(actions, source="dashboard_ai")
-        cmd_json = json.dumps(cmd)
-        result = client.publish(MQTT_CMD_TOPIC, cmd_json, qos=1)
-        LOG.info("🤖 AI Command sent: %s -> %s", cmd['cmd_id'], list(actions.keys()))
-        return True
-    except Exception as e:
-        LOG.error("Failed to publish command: %s", e)
-        return False
-
 # ---------- MQTT background worker ----------
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
@@ -295,23 +173,24 @@ def on_mqtt_message(client, userdata, msg):
         with data_lock:
             data_queue.append(record)
             
-        # 🤖 AI CONTROL: Make decisions and send commands to ESP32
-        actions, pred_soil = decide_actions_from_telemetry(payload)
-        if actions:
-            publish_command(client, actions)
-            LOG.info("🎯 AI Decision: pred_soil=%.3f, actions=%s", pred_soil, list(actions.keys()))
+        # Dashboard only handles telemetry display - AI control is in cloud_controller.py
+        LOG.debug("📊 Dashboard: Telemetry received from device %s", payload.get('device_id', 'unknown'))
             
     except Exception as e:
         LOG.error("Error processing MQTT message: %s", e)
         LOG.debug("Problematic payload: %s", payload)
 
 def mqtt_worker(broker, port, topic, keepalive=60):
+    global mqtt_client
     try:
         # Use newer MQTT client API to avoid deprecation warning
         client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     except:
         # Fallback for older paho-mqtt versions
         client = mqtt.Client()
+    
+    # Store client globally for command publishing
+    mqtt_client = client
         
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
@@ -350,21 +229,8 @@ st.sidebar.text(f"Topic: {MQTT_TOPIC}")
 st.sidebar.text(f"Cmd Topic: {MQTT_CMD_TOPIC}")
 st.sidebar.text(f"Data buffer: last {MAX_MESSAGES} messages")
 
-# AI Control Status
-st.sidebar.header("🤖 AI Control")
-ai_status = "🟢 ACTIVE" if (irrigation_model and anomaly_model) else "🔴 OFFLINE"
-st.sidebar.text(f"Status: {ai_status}")
-if irrigation_model:
-    st.sidebar.text("✅ Irrigation Model Loaded")
-else:
-    st.sidebar.text("❌ Irrigation Model Missing")
-if anomaly_model:
-    st.sidebar.text("✅ Anomaly Model Loaded") 
-else:
-    st.sidebar.text("❌ Anomaly Model Missing")
-    
-st.sidebar.text(f"Soil Target: {SOIL_TARGET}")
-st.sidebar.text(f"Temp Setpoint: {T_SET}°C")
+# Note: AI Control is handled by cloud_controller.py service
+st.sidebar.info("🤖 AI Control runs in cloud_controller.py service")
 
 # Load fallback CSV for historical view
 try:

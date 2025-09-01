@@ -9,7 +9,7 @@ import paho.mqtt.client as mqtt
 import pandas as pd
 from utils import load_config, read_csv  # reuse your utils
 
-cfg = load_config("config.yaml")
+cfg = load_config("../config.yaml")
 MODEL_DIR = cfg['model_dir']
 BAY = "A1"
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "broker.hivemq.com")
@@ -36,7 +36,10 @@ IRRIGATION_MIN_SEC = cfg.get('control',{}).get('irrigation_min_sec', 8)
 CMD_EXPIRES_S = cfg.get('control',{}).get('cmd_expires_s', 180)
 
 # MQTT setup
-client = mqtt.Client()
+try:
+    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+except:
+    client = mqtt.Client()
 client.connect(MQTT_BROKER, 1883, 60)
 
 def now_iso():
@@ -61,6 +64,33 @@ def duration_from_delta(delta):  # heuristic: map predicted deficit to seconds
     secs = max(IRRIGATION_MIN_SEC, min(IRRIGATION_MAX_SEC, secs))
     return int(secs)
 
+def safe_parse_timestamp(ts_val):
+    """Parse timestamp safely, handling ESP32 boot seconds and invalid dates"""
+    try:
+        if ts_val is None:
+            return datetime.now().hour
+        
+        # Handle ESP32 boot seconds (small numbers as strings like "32")
+        if isinstance(ts_val, str) and ts_val.isdigit():
+            boot_seconds = float(ts_val)
+            if boot_seconds < 86400:  # Less than 1 day in seconds
+                return datetime.now().hour  # Use current hour
+                
+        # Handle epoch timestamps
+        if isinstance(ts_val, (str, int, float)):
+            ts_num = float(ts_val)
+            # Check if it's a reasonable year (1970-2100)
+            if ts_num > 1e12:  # Milliseconds
+                ts_num = ts_num / 1000
+            if 0 < ts_num < 4000000000:  # Reasonable epoch range
+                return pd.to_datetime(ts_num, unit='s').hour
+                
+        # Try direct parsing
+        return pd.to_datetime(ts_val).hour
+    except Exception:
+        # Fallback to current hour
+        return datetime.now().hour
+
 def decide_actions_from_telemetry(payload):
     # payload is dictionary with keys: T, RH, soil_theta (0-1), PPFD, CO2 (optional)
     # Build features for irrigation model (same FE used in training)
@@ -75,19 +105,35 @@ def decide_actions_from_telemetry(payload):
     soil_roll_6 = payload.get('soil_roll_6', soil)
     ppfd_roll_6 = payload.get('ppfd_roll_6', ppfd)
     ext_T = payload.get('ext_T', t)
-    hour = pd.to_datetime(payload.get('ts')).hour if payload.get('ts') else datetime.now().hour
+    hour = safe_parse_timestamp(payload.get('ts'))
 
     X = [[soil_lag1, soil_roll_6, ppfd_roll_6, t, rh, ext_T, hour]]
     pred_soil_6h = float(irrig_model.predict(X)[0])
 
     actions = {}
 
-    # Irrigation decision: if predicted soil after horizon < soil_min -> run pump
-    if pred_soil_6h < SOIL_MIN:
-        delta = SOIL_TARGET - pred_soil_6h
+    print(f"[{now_iso()}] DEBUG: soil={soil}, SOIL_MIN={SOIL_MIN}, current_critical={soil < SOIL_MIN if soil else 'None'}")
+    print(f"[{now_iso()}] DEBUG: pred_soil_6h={pred_soil_6h}, predicted_low={pred_soil_6h < SOIL_MIN}")
+
+    # HYBRID IRRIGATION LOGIC: Use both current and predicted soil
+    # If current soil is critically low OR predicted soil is low, irrigate
+    current_soil_critical = soil < SOIL_MIN if soil is not None else False
+    predicted_soil_low = pred_soil_6h < SOIL_MIN
+    
+    if current_soil_critical or predicted_soil_low:
+        # Use current soil for immediate need, predicted soil for duration calculation
+        if current_soil_critical:
+            delta = SOIL_TARGET - soil  # Base on current soil
+            print(f"[{now_iso()}] CRITICAL: Current soil {soil:.3f} < {SOIL_MIN} - Immediate irrigation needed")
+        else:
+            delta = SOIL_TARGET - pred_soil_6h  # Base on predicted soil
+            print(f"[{now_iso()}] PREDICTIVE: Predicted soil {pred_soil_6h:.3f} < {SOIL_MIN} - Preventive irrigation")
+            
         secs = duration_from_delta(delta)
+        print(f"[{now_iso()}] DEBUG: delta={delta}, secs={secs}")
         if secs > 0:
             actions['irrigation'] = {"action":"on", "duration_s": secs}
+            print(f"[{now_iso()}] IRRIGATION: {secs}s command generated")
     # Temperature control: simple mapping using current temp (cloud can do advanced later)
     if t is not None:
         if t > T_SET + T_DEADBAND:
@@ -111,16 +157,22 @@ def decide_actions_from_telemetry(payload):
 def on_message(client, userdata, msg):
     try:
         payload = json.loads(msg.payload.decode())
+        print(f"[{now_iso()}] DEBUG: Received payload: {payload}")
+        
+        # Process the telemetry and generate actions
         actions, pred_soil = decide_actions_from_telemetry(payload)
+        print(f"[{now_iso()}] DEBUG: Generated actions: {actions}, pred_soil: {pred_soil}")
+        
         if actions:
             cmd = make_cmd(actions, source="cloud")
             client.publish(TOPIC_CMD, json.dumps(cmd))
             print(f"[{now_iso()}] Published CMD: {cmd['cmd_id']} actions={list(actions.keys())}")
         else:
-            # optionally publish no-op or status
-            pass
+            print(f"[{now_iso()}] No actions generated from payload")
+            
     except Exception as e:
-        print("Error in on_message:", e)
+        print(f"[{now_iso()}] Error in on_message: {e}")
+        print(f"[{now_iso()}] Continuing to process next message...")
 
 client.subscribe(TOPIC_TELE)
 client.on_message = on_message
