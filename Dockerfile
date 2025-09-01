@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r requirements.txt
 
 # Copy only essential AI components for cloud deployment
-COPY AI/config.yaml ./AI/
+COPY AI/config.yaml ./AI/config.yaml
 COPY AI/data/ ./AI/data/
 
 # Don't copy existing models - we'll retrain them with compatible versions
@@ -41,21 +41,25 @@ EXPOSE 8080
 # Create startup script that handles the proper AI workflow
 RUN echo '#!/bin/bash\n\
 set -e\n\
-cd /app\n\
 echo "🚀 Starting IoTricity AI Service..."\n\
 echo "📁 Current directory: $(pwd)"\n\
-echo "📁 Directory contents:"\n\
-ls -la\n\
-echo "📁 AI directory contents:"\n\
-ls -la AI/\n\
+echo "📁 Full directory structure:"\n\
+find /app -type f -name "*.py" -o -name "*.yaml" -o -name "*.csv" | head -20\n\
 \n\
 # Ensure directories exist\n\
 mkdir -p AI/models AI/data AI/logs\n\
 echo "📁 Created directories: AI/models AI/data AI/logs"\n\
 \n\
+# Change to AI/src directory for proper relative paths\n\
+cd /app/AI/src\n\
+echo "📁 Changed to: $(pwd)"\n\
+echo "📁 Contents of current directory:"\n\
+ls -la\n\
+echo "📁 Contents of ../config.yaml location:"\n\
+ls -la ../\n\
+\n\
 # Step 1: Generate synthetic data\n\
 echo "📊 Generating synthetic training data..."\n\
-cd AI/src\n\
 python generate_synthetic.py\n\
 echo "📊 Data generation completed"\n\
 \n\
@@ -64,7 +68,7 @@ if [ -f "../data/synthetic_greenhouse_7days_10min.csv" ]; then\n\
   echo "✅ Data file found: ../data/synthetic_greenhouse_7days_10min.csv"\n\
   wc -l ../data/synthetic_greenhouse_7days_10min.csv\n\
 else\n\
-  echo "❌ Data file not found, checking alternative paths..."\n\
+  echo "❌ Data file not found, checking all CSV files in container..."\n\
   find /app -name "*.csv" -type f\n\
   exit 1\n\
 fi\n\

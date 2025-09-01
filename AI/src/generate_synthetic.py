@@ -54,10 +54,25 @@ df = pd.DataFrame({
 })
 
 # Save to configured path
-config_path = os.path.join("..", "config.yaml")
-if not os.path.exists(config_path):
-    # Try alternative path for Docker deployment
-    config_path = os.path.join("..", "..", "AI", "config.yaml")
+config_paths = [
+    "../config.yaml",  # Standard development path
+    "../../AI/config.yaml",  # Docker container path from /app/AI/src  
+    "../AI/config.yaml",  # Alternative Docker path
+    "config.yaml"  # Last resort - same directory
+]
+
+config_path = None
+for path in config_paths:
+    if os.path.exists(path):
+        config_path = path
+        break
+
+if not config_path:
+    print("ERROR: Could not find config.yaml in any expected location!")
+    print("Tried paths:", config_paths)
+    print("Current working directory:", os.getcwd())
+    print("Directory contents:", os.listdir("."))
+    exit(1)
     if not os.path.exists(config_path):
         config_path = "config.yaml"  # Last resort
 

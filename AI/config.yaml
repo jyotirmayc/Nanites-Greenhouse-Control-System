@@ -9,7 +9,7 @@ model:
 model_dir: ../models  # Added for pi_fallback.py and cloud_controller.py
 
 training:
-  data_path: ../AI/data/synthetic_greenhouse_7days_10min.csv
+  data_path: ../data/synthetic_greenhouse_7days_10min.csv  # Path relative to AI/src/ directory
   irrigation_features:
     - soil_lag1
     - soil_roll_6
