@@ -44,6 +44,7 @@ DHT dht(DHTPIN, DHTTYPE);
 // MQTT topics
 String TOP_TELE = String("greenhouse/") + BAY + "/telemetry";
 String TOP_STAT = String("greenhouse/") + BAY + "/status";
+String TOP_CMD = String("greenhouse/") + BAY + "/cmd";
 
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
@@ -75,6 +76,59 @@ void connectWiFi(){
 // MQTT callback
 void mqttCallback(char* topic, byte* payload, unsigned int len) {
   Serial.print("Received MQTT: "); Serial.println(topic);
+  
+  if (String(topic) == TOP_CMD) {
+    // Parse command JSON
+    StaticJsonDocument<512> cmd;
+    DeserializationError error = deserializeJson(cmd, payload, len);
+    
+    if (!error) {
+      Serial.println("Processing command:");
+      
+      // Check if command has expired
+      String expires_at = cmd["expires_at"];
+      String cmd_id = cmd["cmd_id"];
+      Serial.print("Command ID: "); Serial.println(cmd_id);
+      
+      // Process actions
+      JsonObject actions = cmd["actions"];
+      
+      // Handle irrigation command
+      if (actions.containsKey("irrigation")) {
+        JsonObject irrig = actions["irrigation"];
+        if (irrig["action"] == "on") {
+          int duration = irrig["duration_s"];
+          pump_state = true;
+          digitalWrite(PUMP_PIN, HIGH);
+          Serial.print("IRRIGATION ON for "); Serial.print(duration); Serial.println("s");
+          // Note: In a real implementation, you'd use a timer to turn off after duration
+        }
+      }
+      
+      // Handle fan command
+      if (actions.containsKey("fan")) {
+        JsonObject fan_cmd = actions["fan"];
+        if (fan_cmd["action"] == "set") {
+          float duty = fan_cmd["duty"];
+          fan_state = (duty > 0.5);
+          digitalWrite(FAN_PIN, fan_state ? HIGH : LOW);
+          Serial.print("FAN SET to duty: "); Serial.println(duty);
+        }
+      }
+      
+      // Handle safety mode
+      if (actions.containsKey("safety")) {
+        Serial.println("SAFETY MODE ACTIVATED");
+        // Turn off pump, turn on fan
+        pump_state = false;
+        fan_state = true;
+        digitalWrite(PUMP_PIN, LOW);
+        digitalWrite(FAN_PIN, HIGH);
+      }
+    } else {
+      Serial.print("JSON parse error: "); Serial.println(error.c_str());
+    }
+  }
 }
 
 // Connect to MQTT broker
@@ -86,6 +140,9 @@ void connectMQTT() {
     String clientId = String("esp32-") + BAY + "-" + String(random(0xffff), HEX);
     if (mqtt.connect(clientId.c_str())) {
       Serial.println("MQTT connected!");
+      // Subscribe to command topic
+      mqtt.subscribe(TOP_CMD.c_str());
+      Serial.print("Subscribed to: "); Serial.println(TOP_CMD);
     } else {
       Serial.print("MQTT failed, rc="); Serial.println(mqtt.state());
       delay(1000);

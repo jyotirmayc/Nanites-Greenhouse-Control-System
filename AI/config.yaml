@@ -6,6 +6,8 @@ model:
     type: IsolationForest
     path: ../models/anomaly_iforest.pkl
 
+model_dir: ../models  # Added for pi_fallback.py and cloud_controller.py
+
 training:
   data_path: ../AI/data/synthetic_greenhouse_7days_10min.csv
   irrigation_features:
@@ -27,10 +29,22 @@ training:
   horizon_steps: 36        # 36 steps × timestep_minutes = 6 hours (with 10-min timestep)
   timestep_minutes: 10
 
+control:  # Added for decision logic parameters
+  soil_min: 0.28
+  soil_target: 0.32
+  T_set: 24.0
+  T_deadband: 1.0
+  irrigation_max_sec: 60
+  irrigation_min_sec: 8
+  cmd_expires_s: 180
+
+fallback:  # Added for pi_fallback.py
+  cloud_timeout_s: 90
+
 inference:
   mqtt_broker: "localhost"
   mqtt_port: 1883
-  telemetry_topic: "greenhouse/A1/tele"
+  telemetry_topic: "greenhouse/A1/telemetry"
   irrigation_topic: "greenhouse/A1/pred"
   alert_topic: "greenhouse/A1/alert"
   cmd_topic: "greenhouse/A1/cmd"

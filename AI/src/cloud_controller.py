@@ -11,7 +11,7 @@ import paho.mqtt.client as mqtt
 import pandas as pd
 from utils import load_config, read_csv  # reuse your utils
 
-cfg = load_config("config.yaml")
+cfg = load_config("../config.yaml")
 MODEL_DIR = cfg['model_dir']
 BAY = "A1"
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "localhost")

@@ -1,43 +1,127 @@
 # Python
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.pyw.bak
 *.db
 *.sqlite3
 *.log
 *.env
 .env*
+.python-version
+
+# Virtual Environments
+env/
+ENV/
+venv/
+.venv/
+pip-selfcheck.json
 
 # Jupyter
 .ipynb_checkpoints/
+*.ipynb_checkpoints
 
 # VS Code
-.vscode/
+.vscode/ipch/
+.vscode/browse.vc.db*
+.vscode/settings.json
 .settings/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
 
 # Data & Models
 *.csv
 *.h5
 *.pkl
 *.joblib
+*.npy
+*.npz
 models/
+AI/data/
+AI/models/
+logs/
+AI/logs/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Docker
+# MQTT & Docker
+mosquitto/data/
+mosquitto/log/
 *.pid
+docker-compose.override.yml
 
 # Streamlit
 .streamlit/
+.streamlit/secrets.toml
 
-# Misc
-*.bak
-*.swp
-*.tmp
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# Ignore test outputs
+# Windows
+desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Arduino/ESP32
+*.hex
+*.bin
+*.elf
+*.map
+build/
+.arduino15/
+
+# Config files with secrets (if any)
+config_local.yaml
+secrets.yaml
+.secrets
+
+# Test outputs
 /test_outputs/
+test_results/
+coverage/
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+.#*
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg

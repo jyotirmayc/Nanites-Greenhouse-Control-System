@@ -193,9 +193,18 @@ def compute_features(payload: dict) -> dict | None:
         ts_parsed = pd.to_datetime(ts_iso, utc=True)
         hour = ts_parsed.hour + ts_parsed.minute / 60.0
 
-        soil_lag1 = payload.get("soil_theta_prev", soil)
-        soil_roll_6 = payload.get("soil_roll_6", soil)
-        ppfd_roll_6 = payload.get("ppfd_roll_6", PPFD)
+        # Improved feature engineering with better fallbacks
+        soil_lag1 = payload.get("soil_theta_prev", soil)  # Use previous if available, else current
+        soil_roll_6 = payload.get("soil_roll_6", soil)    # Use rolling avg if available, else current
+        ppfd_roll_6 = payload.get("ppfd_roll_6", PPFD)    # Use rolling avg if available, else current
+        
+        # Additional robust handling - if still missing, use safe defaults
+        if soil_lag1 is None:
+            soil_lag1 = soil
+        if soil_roll_6 is None:
+            soil_roll_6 = soil  
+        if ppfd_roll_6 is None:
+            ppfd_roll_6 = PPFD
 
         feats = {
             "soil_lag1": float(soil_lag1),
