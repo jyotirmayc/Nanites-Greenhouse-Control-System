@@ -30,11 +30,7 @@ req.txt
 Thumbs.db
 
 # Exclude unnecessary AI/src files (local/demo only)
-AI/src/mqtt_publisher_demo.py
 AI/src/pi_fallback.py
-AI/src/predict_irrigation.py
-AI/src/predict_anomaly.py
-AI/src/infer_service.py
 
 # Keep only essential AI components:
 # AI/config.yaml

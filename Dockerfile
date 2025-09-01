@@ -16,18 +16,13 @@ COPY AI/config.yaml ./AI/config.yaml
 COPY AI/data/ ./AI/data/
 
 # Don't copy existing models - we'll retrain them with compatible versions
-# COPY AI/models/ ./AI/models/
-
 # Copy only essential source files (exclude local/demo files)
 COPY AI/src/cloud_controller.py ./AI/src/
 COPY AI/src/utils.py ./AI/src/
 COPY AI/src/streamlit_dashboard.py ./AI/src/
 COPY AI/src/generate_synthetic.py ./AI/src/
 COPY AI/src/train_irrigation.py ./AI/src/
-COPY AI/src/train_anomaly.py ./AI/src/
-
-# Copy additional data if present
-COPY data/ ./data/ 
+COPY AI/src/train_anomaly.py ./AI/src/ 
 
 # Set environment variables for cloud deployment
 ENV PYTHONPATH=/app
