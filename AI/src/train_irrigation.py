@@ -11,19 +11,25 @@ import yaml
 
 # ---------------- Arguments ----------------
 parser = argparse.ArgumentParser()
-parser.add_argument("--data", default=os.getenv("DATA_PATH", "../data/synthetic.csv"),
+# Load config first to get the correct default path
+CONFIG_PATH = Path("../config.yaml")
+if not CONFIG_PATH.exists():
+    # Try loading from same directory during cloud deployment
+    CONFIG_PATH = Path("config.yaml") if Path("config.yaml").exists() else Path("../config.yaml")
+
+with CONFIG_PATH.open() as f:
+    config = yaml.safe_load(f)
+
+default_data_path = config.get('training', {}).get('data_path', "../data/synthetic.csv")
+parser.add_argument("--data", default=os.getenv("DATA_PATH", default_data_path),
                     help="Path to input CSV with telemetry")
 parser.add_argument("--outdir", default=os.getenv("MODEL_DIR", "../models"),
                     help="Directory to save trained model + metadata")
 args = parser.parse_args()
 os.makedirs(args.outdir, exist_ok=True)
 
-# ---------------- Load config ----------------
-CONFIG_PATH = Path("../config.yaml")
-if not CONFIG_PATH.exists():
-    raise FileNotFoundError(f"Config file not found: {CONFIG_PATH}")
-with CONFIG_PATH.open() as f:
-    config = yaml.safe_load(f)
+# ---------------- Load config (already loaded above) ----------------
+# Config already loaded for default path
 
 DATA_PATH = Path(args.data)
 if not DATA_PATH.exists():

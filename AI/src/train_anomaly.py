@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import List
+import yaml
 
 import pandas as pd
 from sklearn.ensemble import IsolationForest
@@ -13,8 +14,18 @@ from utils import ensure_dir, save_model, resolve_path
 
 
 def parse_args():
+    # Load config to get default data path
+    config_path = Path("../config.yaml")
+    if not config_path.exists():
+        config_path = Path("config.yaml") if Path("config.yaml").exists() else Path("../config.yaml")
+    
+    with config_path.open() as f:
+        config = yaml.safe_load(f)
+    
+    default_data_path = config.get('training', {}).get('data_path', '../data/synthetic.csv')
+    
     p = argparse.ArgumentParser(description='Train IsolationForest anomaly detector')
-    p.add_argument('--data', type=str, required=True, help='Path to telemetry CSV')
+    p.add_argument('--data', type=str, default=default_data_path, help='Path to telemetry CSV')
     p.add_argument('--outdir', type=str, default='../models', help='Directory to write model and metadata')
     p.add_argument('--features', type=str, default='T,RH,soil_theta,PPFD,CO2',
                    help='Comma-separated list of feature column names to train on')
