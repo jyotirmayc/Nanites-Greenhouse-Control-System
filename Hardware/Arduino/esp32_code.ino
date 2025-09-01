@@ -63,9 +63,10 @@ unsigned long lastHeartbeatMs = 0;
 
 // Simulate soil volumetric water content
 float analogToVWC(int raw) {
+  // Convert analog reading to realistic soil moisture (0.1 to 0.6 range)
   float v = (4095.0 - raw) / 4095.0;
   if (v < 0) v = 0; if (v > 1) v = 1;
-  return v;
+  return 0.1 + (v * 0.5);  // Scale to 0.1-0.6 realistic range
 }
 
 // Connect to Wi-Fi (simulated)

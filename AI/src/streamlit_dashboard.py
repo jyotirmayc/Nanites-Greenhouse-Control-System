@@ -1,75 +1,77 @@
+#!/usr/bin/env python3
 """
-Streamlit dashboard for greenhouse telemetry.
+IOTricity Greenhouse Dashboard (Streamlit)
 
-- Background MQTT thread collects messages into a bounded deque.
-- Streamlit UI reads the deque, validates data, and renders charts/metrics.
-- Uses logging (no prints), robust timestamp parsin            if col != 'timestamp':
-                df_live[col] = pd.to_numeric(df_live[col], errors="coerce")
-                # Replace inf/-inf with NaN, then fill
-                df_live[col] = df_live[col].replace([float("inf"), float("-inf")], pd.NA)
-                df_live[col] = df_live[col].ffill().fillna(0.0)
-                
-                # Final check: ensure no remaining inf values
-                if df_live[col].isin([float("inf"), float("-inf")]).any():
-                    df_live[col] = df_live[col].replace([float("inf"), float("-inf")], 0.0)fe numeric handling.
+- Background MQTT thread ingests telemetry JSON into a bounded deque.
+- Streamlit reads the deque, validates data, and renders metrics & charts.
+- Includes a Difference view to compare any two sensor series.
+- Uses structured logging and safe parsing; no prints or emojis.
 """
+
 from collections import deque
 from threading import Thread, Lock
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
 import time
 import json
 import logging
 import os
 import signal
+from typing import Any, Dict
+
 import pandas as pd
 import paho.mqtt.client as mqtt
 import streamlit as st
 import yaml
-import joblib
 import uuid
+
+# ---------- Logging ----------
+LOG = logging.getLogger("iotr_dashboard")
+if not LOG.hasHandlers():
+    h = logging.StreamHandler()
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+    LOG.addHandler(h)
+LOG.setLevel(logging.INFO)
 
 # ---------- Configuration ----------
 THIS_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = THIS_DIR.parent / "config.yaml"
+CONFIG_PATH = THIS_DIR.parent / "config.yaml"
 
-LOG = logging.getLogger("io_tricity_dashboard")
-if not LOG.handlers:
-    ch = logging.StreamHandler()
-    ch.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
-    LOG.addHandler(ch)
-LOG.setLevel(logging.INFO)  # Reduce logging now that it's working
+cfg: Dict[str, Any] = {}
+if CONFIG_PATH.exists():
+    try:
+        with open(CONFIG_PATH, "r") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception as e:
+        LOG.warning("Could not load config.yaml (%s) — using defaults", e)
 
-# Load config (fallback to sensible defaults)
-try:
-    with open(DEFAULT_CONFIG_PATH, "r") as f:
-        cfg = yaml.safe_load(f) or {}
-except Exception:
-    LOG.warning("Failed to load config.yaml; using defaults")
-    cfg = {}
+MQTT_BROKER = os.environ.get("MQTT_BROKER", cfg.get("inference", {}).get("mqtt_broker", "broker.hivemq.com"))
+MQTT_PORT = int(os.environ.get("MQTT_PORT", cfg.get("inference", {}).get("mqtt_port", 1883)))
+TELEMETRY_TOPIC = os.environ.get("MQTT_TOPIC", cfg.get("inference", {}).get("telemetry_topic", "greenhouse/A1/telemetry"))
+COMMAND_TOPIC = os.environ.get("COMMAND_TOPIC", cfg.get("inference", {}).get("cmd_topic", "greenhouse/A1/cmd"))
+DATA_CSV_PATH = os.environ.get("DATA_CSV_PATH", cfg.get("training", {}).get("data_path", str(THIS_DIR.parent / "data" / "synthetic_greenhouse_7days_10min.csv")))
 
-MQTT_BROKER = os.environ.get("MQTT_BROKER", "broker.hivemq.com")  # Override to public broker
-MQTT_PORT = int(os.environ.get("MQTT_PORT",
-                               cfg.get("inference", {}).get("mqtt_port", 1883)))
-MQTT_TOPIC = cfg.get("inference", {}).get("telemetry_topic", "greenhouse/A1/telemetry")
-MQTT_CMD_TOPIC = cfg.get("inference", {}).get("cmd_topic", "greenhouse/A1/cmd")
-DATA_CSV_PATH = cfg.get("training", {}).get("data_path",
-                                           str(THIS_DIR.parent / "data" / "synthetic_greenhouse_7days_10min.csv"))
+MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", cfg.get("inference", {}).get("max_messages", 200)))
+MAX_COMMANDS = int(os.environ.get("MAX_COMMANDS", 50))
+AUTO_RECONNECT = True
 
-# Configuration for dashboard only
-MODEL_DIR = THIS_DIR.parent / "models"
+# ---------- Shared state (persist across reruns) ----------
+if "telemetry" not in st.session_state:
+    st.session_state.telemetry = deque(maxlen=MAX_MESSAGES)
+if "commands" not in st.session_state:
+    st.session_state.commands = deque(maxlen=MAX_COMMANDS)
+if "mqtt_client" not in st.session_state:
+    st.session_state.mqtt_client = None
+if "mqtt_connected" not in st.session_state:
+    st.session_state.mqtt_connected = False
+if "mqtt_started" not in st.session_state:
+    st.session_state.mqtt_started = False
 
-# Buffer settings
-MAX_MESSAGES = int(os.environ.get("MAX_MESSAGES", "1000"))
-
-# ---------- Shared state ----------
-data_queue = deque(maxlen=MAX_MESSAGES)
 data_lock = Lock()
-_stop_flag = False  # used for graceful shutdown of background thread
-mqtt_client = None  # Global MQTT client for command publishing
+_stop_flag = False  # used to signal worker to stop on shutdown
 
-# ---------- Helpers ----------
-def safe_float(v, default=0.0):
+# ---------- Utility functions ----------
+def safe_float(v, default: float = None):
+    """Convert to float safely. Return default if conversion fails or value is NaN/inf."""
     try:
         if v is None:
             return default
@@ -80,127 +82,102 @@ def safe_float(v, default=0.0):
     except Exception:
         return default
 
-def parse_timestamp(ts_val):
-    """Return a pandas.Timestamp in UTC. Accept numeric epoch, ISO string, or pandas Timestamp."""
+def parse_ts(ts_val):
+    """Return pandas.Timestamp UTC. Accepts epoch seconds/ms, ISO or Timestamp-like."""
     try:
         if ts_val is None:
-            return pd.Timestamp.utcnow()
-        
-        # Handle ESP32 format: numeric seconds since boot (string like "134")
-        if isinstance(ts_val, str) and ts_val.isdigit():
-            # ESP32 sends seconds since boot, convert to actual timestamp
-            # Use current time as reference and create meaningful timestamp
-            boot_seconds = float(ts_val)
-            current_time = pd.Timestamp.utcnow()
-            # Create timestamp based on boot time (approximate)
-            return current_time - pd.Timedelta(seconds=max(0, 300 - boot_seconds))
-            
-        # numeric seconds or milliseconds
+            return pd.Timestamp.utcnow().tz_localize("UTC")
         if isinstance(ts_val, (int, float)):
-            # assume seconds if value < 1e12, milliseconds otherwise
             if ts_val > 1e12:
                 return pd.to_datetime(ts_val, unit="ms", utc=True)
-            elif ts_val > 0:
-                return pd.to_datetime(ts_val, unit="s", utc=True)
-            else:
-                # Handle small values like ESP32 boot seconds
-                current_time = pd.Timestamp.utcnow()
-                return current_time - pd.Timedelta(seconds=max(0, 300 - ts_val))
-                
-        # string or pandas timestamp - try to parse as datetime
+            return pd.to_datetime(ts_val, unit="s", utc=True)
         return pd.to_datetime(ts_val, utc=True)
-        
-    except Exception as e:
-        LOG.debug(f"Timestamp parsing failed for {ts_val}: {e}")
-        return pd.Timestamp.utcnow()
+    except Exception:
+        return pd.Timestamp.utcnow().tz_localize("UTC")
 
-def normalize_for_plot(df, columns):
-    """Scale columns 0-100 for comparison; ignore constant columns."""
-    out = df.copy()
-    for col in columns:
-        if col not in out.columns:
-            continue
-        mn, mx = out[col].min(), out[col].max()
-        if pd.isna(mn) or pd.isna(mx) or mx <= mn:
-            out[col] = 50.0
-        else:
-            out[col] = (out[col] - mn) / (mx - mn) * 100.0
-    return out
+def append_telemetry(record: dict):
+    """Thread-safe append to telemetry deque in session_state."""
+    with data_lock:
+        st.session_state.telemetry.append(record)
 
-# ---------- MQTT background worker ----------
+def append_command(record: dict):
+    """Append an AI command if unique by cmd_id; keep bounded history."""
+    with data_lock:
+        cmd_id = record.get("cmd_id") or record.get("command_id")
+        # deduplicate by cmd_id
+        if cmd_id:
+            if any((c.get("cmd_id") == cmd_id or c.get("command_id") == cmd_id) for c in st.session_state.commands):
+                return
+        st.session_state.commands.append(record)
+
+# ---------- MQTT callbacks & worker ----------
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         LOG.info("Connected to MQTT broker %s:%d", MQTT_BROKER, MQTT_PORT)
-        client.subscribe(MQTT_TOPIC)
-        LOG.info("Subscribed to topic %s", MQTT_TOPIC)
+        client.subscribe(TELEMETRY_TOPIC)
+        client.subscribe(COMMAND_TOPIC)
+        st.session_state.mqtt_connected = True
     else:
-        LOG.error("Failed to connect to MQTT broker (rc=%s)", rc)
+        LOG.error("Failed to connect to MQTT (rc=%s)", rc)
+        st.session_state.mqtt_connected = False
 
-def on_disconnect(client, userdata, flags, rc, properties=None):
+def on_disconnect(client, userdata, rc, properties=None):
     LOG.warning("MQTT disconnected (rc=%s)", rc)
+    st.session_state.mqtt_connected = False
 
-def on_mqtt_message(client, userdata, msg):
+def on_message(client, userdata, msg):
+    # Parse payload; tolerate different field names
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
-        LOG.debug("Received MQTT payload: %s", payload)
-    except Exception as e:
-        LOG.debug("Received non-JSON payload; ignoring: %s", e)
+    except Exception:
+        LOG.debug("Received non-JSON payload on topic %s", msg.topic)
         return
 
-    # required telemetry keys (relaxed)
-    required = {"ts", "T", "RH", "soil_theta", "PPFD", "CO2"}
-    # Accept if at least these keys in payload
-    if not required.issubset(payload.keys()):
-        LOG.debug("Telemetry missing required fields: %s", required - set(payload.keys()))
-        return
+    now_ts = pd.Timestamp.utcnow().tz_localize("UTC")
 
-    # parse/convert fields
-    try:
-        ts = parse_timestamp(payload.get("ts"))
-        record = {
-            "ts": ts,
+    if msg.topic == TELEMETRY_TOPIC:
+        # Accept flexible payload shape; convert numeric fields to floats; parse timestamp if present
+        ts_parsed = parse_ts(payload.get("ts")) if payload.get("ts") is not None else now_ts
+        rec = {
+            "ts": ts_parsed,
+            "device_id": payload.get("device_id", payload.get("bayId", "A1")),
             "T": safe_float(payload.get("T")),
             "RH": safe_float(payload.get("RH")),
-            "soil_theta": safe_float(payload.get("soil_theta")),
-            "PPFD": safe_float(payload.get("PPFD")),
+            "soil_theta": safe_float(payload.get("soil_theta", payload.get("soil"))),
+            "PPFD": safe_float(payload.get("PPFD", payload.get("light"))),
             "CO2": safe_float(payload.get("CO2")),
             "ext_T": safe_float(payload.get("ext_T", payload.get("T"))),
-            "device_id": payload.get("device_id", payload.get("bayId", "A1")),
         }
-        
-        LOG.debug("Processed record: %s", record)
+        append_telemetry(rec)
 
-        with data_lock:
-            data_queue.append(record)
-            
-        # Dashboard only handles telemetry display - AI control is in cloud_controller.py
-        LOG.debug("📊 Dashboard: Telemetry received from device %s", payload.get('device_id', 'unknown'))
-            
-    except Exception as e:
-        LOG.error("Error processing MQTT message: %s", e)
-        LOG.debug("Problematic payload: %s", payload)
+    elif msg.topic == COMMAND_TOPIC:
+        cmd_rec = {
+            "timestamp": now_ts,
+            "cmd_id": payload.get("cmd_id") or payload.get("command_id") or str(uuid.uuid4()),
+            "source": payload.get("source", "unknown"),
+            "actions": payload.get("actions", {}),
+            "raw": payload
+        }
+        append_command(cmd_rec)
 
-def mqtt_worker(broker, port, topic, keepalive=60):
-    global mqtt_client
-    try:
-        # Use newer MQTT client API to avoid deprecation warning
-        client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-    except:
-        # Fallback for older paho-mqtt versions
-        client = mqtt.Client()
-    
-    # Store client globally for command publishing
-    mqtt_client = client
-        
+def mqtt_worker(broker, port, telemetry_topic, command_topic):
+    client_id = f"streamlit-dashboard-{uuid.uuid4().hex[:8]}"
+    client = mqtt.Client(client_id=client_id, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
-    client.on_message = on_mqtt_message
+    client.on_message = on_message
+    client.reconnect_delay_set(min_delay=1, max_delay=60)
     try:
-        client.connect(broker, port, keepalive=keepalive)
+        client.connect(broker, port, keepalive=60)
     except Exception as e:
-        LOG.error("Unable to connect to MQTT broker %s:%d -> %s", broker, port, e)
+        LOG.error("MQTT connect error: %s", e)
+        st.session_state.mqtt_connected = False
         return
+
+    st.session_state.mqtt_client = client
+    st.session_state.mqtt_connected = True
     client.loop_start()
+    LOG.info("MQTT loop started")
     try:
         while not _stop_flag:
             time.sleep(0.5)
@@ -210,220 +187,220 @@ def mqtt_worker(broker, port, topic, keepalive=60):
             client.disconnect()
         except Exception:
             pass
+        st.session_state.mqtt_connected = False
         LOG.info("MQTT worker stopped")
 
-# ---------- Start MQTT thread ----------
-mqtt_thread = Thread(target=mqtt_worker, args=(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC), daemon=True)
-mqtt_thread.start()
+def start_mqtt():
+    if st.session_state.mqtt_started:
+        return
+    thread = Thread(target=mqtt_worker, args=(MQTT_BROKER, MQTT_PORT, TELEMETRY_TOPIC, COMMAND_TOPIC), daemon=True)
+    thread.start()
+    st.session_state.mqtt_started = True
+    LOG.info("Started MQTT background thread")
+
+def stop_mqtt():
+    global _stop_flag
+    _stop_flag = True
+    # loop_stop and disconnect happen inside worker finally
+    st.session_state.mqtt_started = False
 
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title="IOTricity Greenhouse Dashboard", layout="wide")
-
 st.title("IOTricity Greenhouse Dashboard")
-st.subheader("Real-time environmental monitoring and control")
+st.markdown("Professional real-time telemetry and AI control monitor")
 
-# connection / info card
-st.sidebar.header("Connection")
-st.sidebar.text(f"Broker: {MQTT_BROKER}:{MQTT_PORT}")
-st.sidebar.text(f"Topic: {MQTT_TOPIC}")
-st.sidebar.text(f"Cmd Topic: {MQTT_CMD_TOPIC}")
-st.sidebar.text(f"Data buffer: last {MAX_MESSAGES} messages")
+# Sidebar controls
+with st.sidebar:
+    st.header("Connection")
+    st.write(f"Broker: {MQTT_BROKER}:{MQTT_PORT}")
+    st.write(f"Telemetry topic: {TELEMETRY_TOPIC}")
+    st.write(f"Command topic: {COMMAND_TOPIC}")
+    if st.button("Connect to MQTT"):
+        start_mqtt()
+        time.sleep(0.5)
+        st.experimental_rerun()
+    if st.button("Disconnect MQTT"):
+        stop_mqtt()
+        time.sleep(0.5)
+        st.experimental_rerun()
+    st.markdown("---")
+    st.header("Display options")
+    auto_refresh = st.checkbox("Auto refresh", value=False)
+    refresh_interval = st.slider("Refresh interval (s)", min_value=1, max_value=10, value=2)
+    st.markdown("---")
+    st.header("Difference plot")
+    diff_sensor_a = st.selectbox("Sensor A (left)", options=["T", "ext_T", "RH", "soil_theta", "PPFD", "CO2"], index=0)
+    diff_sensor_b = st.selectbox("Sensor B (right)", options=["T", "ext_T", "RH", "soil_theta", "PPFD", "CO2"], index=2)
+    rolling_window = st.slider("Rolling window for diff (points)", min_value=1, max_value=50, value=5)
+    st.markdown("---")
+    if st.button("Clear telemetry buffer"):
+        with data_lock:
+            st.session_state.telemetry.clear()
+            st.session_state.commands.clear()
+        st.experimental_rerun()
 
-# Note: AI Control is handled by cloud_controller.py service
-st.sidebar.info("🤖 AI Control runs in cloud_controller.py service")
+# Start MQTT automatically if not started
+if not st.session_state.mqtt_started:
+    start_mqtt()
 
-# Load fallback CSV for historical view
-try:
-    df_csv = pd.read_csv(DATA_CSV_PATH, parse_dates=["ts"])
-    LOG.info("Loaded CSV fallback data from %s", DATA_CSV_PATH)
-except Exception:
-    df_csv = pd.DataFrame()
-
-# Top metrics layout
-col1, col2, col3, col4 = st.columns(4)
-msg_count_el = col1.empty()
-last_msg_el = col2.empty()
-status_el = col3.empty()
-uptime_el = col4.empty()
-
-chart_placeholder = st.empty()
-latest_values_container = st.empty()
-
-start_time = time.time()
-
-# Auto-refresh using Streamlit's built-in rerun with delay
-refresh_interval = 3  # seconds
-
-# Main render (non-blocking): read queue snapshot and render
+# Snapshot of telemetry & commands for this render
 with data_lock:
-    snapshot = list(data_queue)
+    telemetry_list = list(st.session_state.telemetry)
+    commands_list = list(st.session_state.commands)
 
-    # Uptime
-    uptime_seconds = int(time.time() - start_time)
-    uptime_el.metric("Dashboard Uptime", f"{uptime_seconds // 3600:02d}:{(uptime_seconds % 3600) // 60:02d}:{uptime_seconds % 60:02d}")
-
-    # Messages received
-    msg_count_el.metric("Messages Received", len(snapshot))
-
-    if snapshot:
-        status_el.success("Connected and receiving live data")
-        last_msg_el.metric("Last update", "Live", delta="Just now")
-        df_live = pd.DataFrame(snapshot).sort_values("ts")
-        
-        # ensure dtype and fill - more robust cleaning
-        numeric_cols = ["T", "RH", "soil_theta", "PPFD", "CO2", "ext_T"]
-        for col in numeric_cols:
-            if col in df_live.columns:
-                df_live[col] = pd.to_numeric(df_live[col], errors="coerce")
-                # Replace inf/-inf with NaN, then fill
-                df_live[col] = df_live[col].replace([float("inf"), float("-inf")], pd.NA)
-                df_live[col] = df_live[col].fillna(method="ffill").fillna(0.0)
-                
-                # Final check: ensure no remaining inf values
-                if df_live[col].isin([float("inf"), float("-inf")]).any():
-                    df_live[col] = df_live[col].replace([float("inf"), float("-inf")], 0.0)
-
-        # pick last N points for plotting - DON'T set ts as index to avoid timezone issues
-        df_plot = df_live.tail(200).copy()
-        
-        # Create time-series data for charts (use numeric index instead of datetime index)
-        df_plot_indexed = df_plot.set_index(pd.RangeIndex(len(df_plot)))
-
-        # Tabs for different metrics
-        tabs = chart_placeholder.tabs(["Temperature", "Moisture & Humidity", "PPFD", "CO2", "Overview"])
-        with tabs[0]:
-            st.markdown("### Temperature")
-            if "T" in df_plot.columns and not df_plot["T"].isna().all():
-                # Use numeric data without timestamp index to avoid infinite extent errors
-                temp_series = df_plot["T"].reset_index(drop=True)
-                if not temp_series.empty and temp_series.notna().sum() > 0:
-                    st.line_chart(temp_series, use_container_width=True)
-                    st.info(f"Average temperature: {temp_series.mean():.1f} °C")
-                else:
-                    st.warning("No valid temperature data")
-            else:
-                st.warning("No valid temperature data")
-
-        with tabs[1]:
-            st.markdown("### Moisture & Humidity")
-            cols = [c for c in ["soil_theta", "RH"] if c in df_plot.columns]
-            if cols:
-                # Create clean data without timestamp issues
-                moisture_data = df_plot[cols].reset_index(drop=True)
-                valid_data = moisture_data.dropna(how='all')
-                
-                if not valid_data.empty:
-                    st.line_chart(valid_data, use_container_width=True)
-                    if "soil_theta" in valid_data.columns:
-                        st.metric("Avg Soil Moisture", f"{valid_data['soil_theta'].mean():.2f}")
-                    if "RH" in valid_data.columns:
-                        st.metric("Avg Humidity", f"{valid_data['RH'].mean():.0f}%")
-                else:
-                    st.warning("No valid moisture/humidity data")
-            else:
-                st.warning("No valid moisture/humidity data")
-
-        with tabs[2]:
-            st.markdown("### PPFD")
-            if "PPFD" in df_plot.columns and not df_plot["PPFD"].isna().all():
-                ppfd_series = df_plot["PPFD"].reset_index(drop=True)
-                if not ppfd_series.empty and ppfd_series.notna().sum() > 0:
-                    st.line_chart(ppfd_series, use_container_width=True)
-                    st.info(f"Average PPFD: {ppfd_series.mean():.1f}")
-                else:
-                    st.warning("No valid PPFD data")
-            else:
-                st.warning("No valid PPFD data")
-
-        with tabs[3]:
-            st.markdown("### CO2")
-            if "CO2" in df_plot.columns and not df_plot["CO2"].isna().all():
-                co2_series = df_plot["CO2"].reset_index(drop=True)
-                if not co2_series.empty and co2_series.notna().sum() > 0:
-                    st.line_chart(co2_series, use_container_width=True)
-                    st.info(f"Average CO2: {co2_series.mean():.0f} ppm")
-                else:
-                    st.warning("No valid CO2 data")
-            else:
-                st.warning("No valid CO2 data")
-
-        with tabs[4]:
-            st.markdown("### Sensor Overview (normalized)")
-            overview_cols = [c for c in ["T", "RH", "soil_theta", "PPFD", "CO2"] if c in df_plot.columns]
-            if overview_cols:
-                overview_data = df_plot[overview_cols].copy()
-                # Reset index to avoid timestamp issues
-                overview_data = overview_data.reset_index(drop=True)
-                
-                # Clean normalization
-                normalized_data = pd.DataFrame(index=overview_data.index)
-                for col in overview_cols:
-                    col_data = overview_data[col].dropna()
-                    if len(col_data) > 1:
-                        min_val, max_val = col_data.min(), col_data.max()
-                        if max_val > min_val and not pd.isna(min_val) and not pd.isna(max_val):
-                            normalized_data[col] = ((overview_data[col] - min_val) / (max_val - min_val) * 100).fillna(50)
-                        else:
-                            normalized_data[col] = 50
-                    else:
-                        normalized_data[col] = 50
-                        
-                if not normalized_data.empty:
-                    st.line_chart(normalized_data, use_container_width=True)
-                    st.caption(f"{len(overview_cols)} sensors normalized for comparison")
-                else:
-                    st.warning("No valid sensor data to show")
-            else:
-                st.warning("No valid sensor data to show")
-
-        # Latest readings
-        if len(df_live) > 0:
-            latest_values = df_live.iloc[-1]
-            with latest_values_container.container():
-                cols = st.columns(5)
-                metrics = [
-                    ("Temperature (°C)", "T", "{:.1f}"),
-                    ("Humidity (%)", "RH", "{:.0f}"),
-                    ("Soil Moisture", "soil_theta", "{:.2f}"),
-                    ("PPFD", "PPFD", "{:.1f}"),
-                    ("CO2 (ppm)", "CO2", "{:.0f}"),
-                ]
-                for c, (label, key, fmt) in zip(cols, metrics):
-                    val = latest_values.get(key, None)
-                    if val is None or pd.isna(val):
-                        c.metric(label, "--")
-                    else:
-                        c.metric(label, fmt.format(val))
-        else:
-            latest_values_container.info("No data available")
-
+# Convert telemetry to DataFrame if available
+if telemetry_list:
+    df = pd.DataFrame(telemetry_list)
+    # Ensure ts is datetime and sort
+    if "ts" in df.columns:
+        df["ts"] = pd.to_datetime(df["ts"], utc=True)
+        df = df.sort_values("ts")
     else:
-        status_el.warning("Waiting for live data")
-        last_msg_el.metric("Last update", "No data")
-        latest_values_container.info("No live telemetry yet. Historical CSV shown below (if available).")
-        if not df_csv.empty:
-            try:
-                # Use numeric index for historical data too
-                df_hist = df_csv.tail(100)[["T", "RH", "soil_theta", "PPFD"]].reset_index(drop=True)
-                chart_placeholder.line_chart(df_hist, use_container_width=True)
-            except Exception as e:
-                st.warning(f"Failed to render historical CSV: {e}")
-                
-    # Auto-refresh after delay
-    time.sleep(refresh_interval)
-    st.rerun()
+        df["ts"] = pd.Timestamp.utcnow()
+else:
+    df = pd.DataFrame(columns=["ts", "device_id", "T", "RH", "soil_theta", "PPFD", "CO2", "ext_T"])
 
-# Footer controls
+# Top metrics (most recent sample)
+st.subheader("Current readings")
+col_temp, col_rh, col_soil, col_ppfd, col_co2 = st.columns(5)
+if not df.empty:
+    latest = df.iloc[-1]
+    col_temp.metric("Temperature (°C)", f"{latest.get('T', 'N/A'):.1f}" if pd.notna(latest.get('T')) else "N/A")
+    col_rh.metric("Humidity (%)", f"{latest.get('RH', 'N/A'):.0f}" if pd.notna(latest.get('RH')) else "N/A")
+    soil_val = latest.get("soil_theta")
+    if pd.notna(soil_val):
+        col_soil.metric("Soil moisture", f"{soil_val:.3f}")
+    else:
+        col_soil.metric("Soil moisture", "N/A")
+    col_ppfd.metric("PPFD", f"{latest.get('PPFD', 'N/A'):.1f}" if pd.notna(latest.get('PPFD')) else "N/A")
+    col_co2.metric("CO2 (ppm)", f"{latest.get('CO2', 'N/A'):.0f}" if pd.notna(latest.get('CO2')) else "N/A")
+else:
+    col_temp.metric("Temperature (°C)", "N/A")
+    col_rh.metric("Humidity (%)", "N/A")
+    col_soil.metric("Soil moisture", "N/A")
+    col_ppfd.metric("PPFD", "N/A")
+    col_co2.metric("CO2 (ppm)", "N/A")
+
+# Charts area
+st.subheader("Sensor trends")
+tabs = st.tabs(["Temperature", "Moisture & Humidity", "Light (PPFD)", "CO2", "Difference", "AI Monitor"])
+
+# Helpers to plot series safely
+def safe_series_plot(series: pd.Series, label: str):
+    if series.dropna().empty or len(series.dropna()) < 2:
+        st.info(f"Insufficient data for {label}")
+        return
+    st.line_chart(series)
+
+with tabs[0]:
+    st.markdown("Temperature (internal and external)")
+    if not df.empty and "T" in df.columns:
+        temp_df = df.set_index("ts")[["T", "ext_T"]].dropna(how="all")
+        if not temp_df.empty:
+            st.line_chart(temp_df)
+            st.write(f"Average: {temp_df.mean().to_dict()}")
+        else:
+            st.info("Not enough temperature data")
+    else:
+        st.info("No temperature data available")
+
+with tabs[1]:
+    st.markdown("Soil moisture and Relative Humidity")
+    if not df.empty:
+        moist_df = df.set_index("ts")[["soil_theta", "RH"]].dropna(how="all")
+        if not moist_df.empty:
+            st.line_chart(moist_df)
+        else:
+            st.info("No moisture/humidity data")
+    else:
+        st.info("No data available")
+
+with tabs[2]:
+    st.markdown("Light (PPFD)")
+    if not df.empty and "PPFD" in df.columns:
+        ppfd_df = df.set_index("ts")[["PPFD"]].dropna()
+        if not ppfd_df.empty:
+            st.line_chart(ppfd_df)
+        else:
+            st.info("No PPFD data")
+    else:
+        st.info("No PPFD data available")
+
+with tabs[3]:
+    st.markdown("CO2 concentration")
+    if not df.empty and "CO2" in df.columns:
+        co2_df = df.set_index("ts")[["CO2"]].dropna()
+        if not co2_df.empty:
+            st.line_chart(co2_df)
+        else:
+            st.info("No CO2 data")
+    else:
+        st.info("No CO2 data available")
+
+with tabs[4]:
+    st.markdown("Difference between two sensors")
+    # Ensure both columns exist
+    if diff_sensor_a not in df.columns or diff_sensor_b not in df.columns:
+        st.info("Selected sensors are not present in telemetry yet")
+    else:
+        diff_df = df.set_index("ts")[[diff_sensor_a, diff_sensor_b]].dropna(how="all").dropna()
+        if diff_df.empty or len(diff_df) < 2:
+            st.info("Insufficient data points for difference plot")
+        else:
+            diff_series = diff_df[diff_sensor_a] - diff_df[diff_sensor_b]
+            st.line_chart(diff_series.rename(f"{diff_sensor_a} - {diff_sensor_b}"))
+            # rolling mean
+            if rolling_window > 1:
+                rolling_mean = diff_series.rolling(window=rolling_window, min_periods=1).mean()
+                st.line_chart(rolling_mean.rename(f"Rolling mean ({rolling_window})"))
+            st.write({
+                "latest_difference": float(diff_series.iloc[-1]),
+                "mean_difference": float(diff_series.mean()),
+                "std_difference": float(diff_series.std())
+            })
+
+with tabs[5]:
+    st.markdown("AI control history")
+    if commands_list:
+        recent = list(reversed(commands_list[-20:]))
+        for cmd in recent:
+            ts = cmd.get("timestamp")
+            src = cmd.get("source")
+            cid = cmd.get("cmd_id")
+            with st.expander(f"{ts.strftime('%Y-%m-%d %H:%M:%S')} — {src} — {cid}"):
+                actions = cmd.get("actions", {})
+                st.json(actions)
+        # summary metrics
+        irrig_count = sum(1 for c in commands_list if "irrigation" in c.get("actions", {}))
+        fan_count = sum(1 for c in commands_list if "fan" in c.get("actions", {}))
+        safety_count = sum(1 for c in commands_list if "safety" in c.get("actions", {}))
+        st.metric("Irrigation events", irrig_count)
+        st.metric("Fan activations", fan_count)
+        st.metric("Safety events", safety_count)
+    else:
+        st.info("No AI commands received yet")
+
+# Footer: connection and refresh controls
 st.markdown("---")
-if st.button("Clear buffer"):
-    with data_lock:
-        data_queue.clear()
+conn_col1, conn_col2, conn_col3 = st.columns([2, 2, 6])
+with conn_col1:
+    conn_status = "Connected" if st.session_state.mqtt_connected else "Disconnected"
+    st.write(f"MQTT: {conn_status}")
+with conn_col2:
+    st.write(f"Telemetry buffer: {len(telemetry_list)}")
+with conn_col3:
+    if st.button("Manual refresh"):
+        st.experimental_rerun()
+
+# Auto-refresh handling
+if auto_refresh:
+    time.sleep(float(refresh_interval))
     st.experimental_rerun()
 
-# graceful shutdown when script terminates (attempt)
-def _shutdown(signum, frame):
+# Graceful shutdown handler
+def _shutdown(sig, frame):
     global _stop_flag
-    LOG.info("Shutdown signal received")
+    LOG.info("Shutdown signal received: %s", sig)
     _stop_flag = True
 
 for sig in (signal.SIGINT, signal.SIGTERM):
