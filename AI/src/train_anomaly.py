@@ -17,12 +17,18 @@ def parse_args():
     # Load config to get default data path
     config_path = Path("../config.yaml")
     if not config_path.exists():
-        config_path = Path("config.yaml") if Path("config.yaml").exists() else Path("../config.yaml")
+        # Try alternative paths for Docker deployment
+        for alt_path in ["config.yaml", "../../AI/config.yaml", "/app/AI/config.yaml"]:
+            if Path(alt_path).exists():
+                config_path = Path(alt_path)
+                break
     
+    print(f"Loading config from: {config_path}")
     with config_path.open() as f:
         config = yaml.safe_load(f)
     
     default_data_path = config.get('training', {}).get('data_path', '../data/synthetic.csv')
+    print(f"Default data path from config: {default_data_path}")
     
     p = argparse.ArgumentParser(description='Train IsolationForest anomaly detector')
     p.add_argument('--data', type=str, default=default_data_path, help='Path to telemetry CSV')
@@ -38,6 +44,9 @@ def main():
     args = parse_args()
     data_path = resolve_path(args.data)
     outdir = resolve_path(args.outdir)
+    
+    print(f"Resolved data path: {data_path}")
+    print(f"Resolved output directory: {outdir}")
     ensure_dir(outdir)
 
     df = pd.read_csv(data_path)

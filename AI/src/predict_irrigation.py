@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import joblib
 import pandas as pd
 import yaml

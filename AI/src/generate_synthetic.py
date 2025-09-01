@@ -4,7 +4,6 @@ import numpy as np
 from datetime import datetime
 import yaml
 
-# Reproducibility
 np.random.seed(42)
 
 # Time setup
@@ -21,7 +20,7 @@ RH = 60 + 15 * np.cos(2 * np.pi * (hours - 6) / 24) + np.random.normal(0, 2, n)
 PPFD = 1000 * np.maximum(0, np.sin(2 * np.pi * (hours - 6) / 24)) + np.random.normal(0, 30, n)
 CO2 = 420 + 30 * np.sin(2 * np.pi * (hours - 9) / 24) + np.random.normal(0, 8, n)
 
-# Soil moisture + irrigation
+# Soil moisture + irrigation simulation
 soil = np.zeros(n)
 soil[0] = 0.35
 evap_coeff = 0.0006
@@ -36,11 +35,11 @@ for i in range(1, n):
         liters = np.random.uniform(0.5, 2.5)
         irrigation_liters[i] = liters
         pump_on[i] = 1
-        soil[i] += 0.01 * liters  # clearer scaling: 0.5–2.5 L → +0.005–0.025
+        soil[i] += 0.01 * liters
 
     soil[i] = np.clip(soil[i], 0.12, 0.50)
 
-# DataFrame
+# Build DataFrame
 df = pd.DataFrame({
     'ts': ts,
     'bayId': ['A1'] * n,
@@ -54,11 +53,22 @@ df = pd.DataFrame({
     'pump_on': pump_on
 })
 
-# Load config
-with open(os.path.join("..", "config.yaml"), "r") as f:
+# Save to configured path
+config_path = os.path.join("..", "config.yaml")
+if not os.path.exists(config_path):
+    # Try alternative path for Docker deployment
+    config_path = os.path.join("..", "..", "AI", "config.yaml")
+    if not os.path.exists(config_path):
+        config_path = "config.yaml"  # Last resort
+
+print(f"Loading config from: {config_path}")
+with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
-# Save using config path
 output_path = config['training']['data_path']
+# Ensure output directory exists
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
 df.to_csv(output_path, index=False)
-print(f"Saved {output_path}")
+print(f"Saved synthetic data to: {output_path}")
+print(f"Data shape: {df.shape}")
+print(f"File exists: {os.path.exists(output_path)}")

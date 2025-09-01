@@ -43,31 +43,49 @@ RUN echo '#!/bin/bash\n\
 set -e\n\
 cd /app\n\
 echo "🚀 Starting IoTricity AI Service..."\n\
+echo "📁 Current directory: $(pwd)"\n\
+echo "📁 Directory contents:"\n\
+ls -la\n\
+echo "📁 AI directory contents:"\n\
+ls -la AI/\n\
 \n\
 # Ensure directories exist\n\
 mkdir -p AI/models AI/data AI/logs\n\
+echo "📁 Created directories: AI/models AI/data AI/logs"\n\
 \n\
-# Step 1: Generate synthetic data if not present\n\
-echo "📊 Checking for training data..."\n\
+# Step 1: Generate synthetic data\n\
+echo "📊 Generating synthetic training data..."\n\
 cd AI/src\n\
-if [ ! -f "../data/synthetic_greenhouse_7days_10min.csv" ]; then\n\
-  echo "📊 Generating synthetic training data..."\n\
-  python generate_synthetic.py\n\
+python generate_synthetic.py\n\
+echo "📊 Data generation completed"\n\
+\n\
+# Verify data file exists\n\
+if [ -f "../data/synthetic_greenhouse_7days_10min.csv" ]; then\n\
+  echo "✅ Data file found: ../data/synthetic_greenhouse_7days_10min.csv"\n\
+  wc -l ../data/synthetic_greenhouse_7days_10min.csv\n\
+else\n\
+  echo "❌ Data file not found, checking alternative paths..."\n\
+  find /app -name "*.csv" -type f\n\
+  exit 1\n\
 fi\n\
 \n\
-# Step 2: Always retrain models to ensure version compatibility\n\
+# Step 2: Train models\n\
 echo "🧠 Training irrigation model..."\n\
 python train_irrigation.py\n\
+echo "✅ Irrigation model trained"\n\
 \n\
 echo "🔍 Training anomaly detection model..."\n\
 python train_anomaly.py\n\
+echo "✅ Anomaly model trained"\n\
 \n\
-echo "✅ Models ready!"\n\
+echo "✅ All models ready!"\n\
+ls -la ../models/\n\
 \n\
 # Step 3: Start AI services\n\
 echo "🤖 Starting cloud controller (AI brain)..."\n\
 python cloud_controller.py &\n\
 CONTROLLER_PID=$!\n\
+echo "📝 Controller PID: $CONTROLLER_PID"\n\
 \n\
 # Wait a moment for controller to initialize\n\
 sleep 5\n\

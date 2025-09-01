@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
 """
-demo_publisher.py
-
 Publish rows from the CSV (from config['training']['data_path']) to the telemetry topic.
 Improvements over the original:
  - robust config & path resolution

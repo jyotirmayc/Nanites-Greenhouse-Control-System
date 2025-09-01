@@ -14,19 +14,28 @@ parser = argparse.ArgumentParser()
 # Load config first to get the correct default path
 CONFIG_PATH = Path("../config.yaml")
 if not CONFIG_PATH.exists():
-    # Try loading from same directory during cloud deployment
-    CONFIG_PATH = Path("config.yaml") if Path("config.yaml").exists() else Path("../config.yaml")
+    # Try alternative paths for Docker deployment
+    for alt_path in ["config.yaml", "../../AI/config.yaml", "/app/AI/config.yaml"]:
+        if Path(alt_path).exists():
+            CONFIG_PATH = Path(alt_path)
+            break
 
+print(f"Loading config from: {CONFIG_PATH}")
 with CONFIG_PATH.open() as f:
     config = yaml.safe_load(f)
 
 default_data_path = config.get('training', {}).get('data_path', "../data/synthetic.csv")
+print(f"Default data path from config: {default_data_path}")
+
 parser.add_argument("--data", default=os.getenv("DATA_PATH", default_data_path),
                     help="Path to input CSV with telemetry")
 parser.add_argument("--outdir", default=os.getenv("MODEL_DIR", "../models"),
                     help="Directory to save trained model + metadata")
 args = parser.parse_args()
 os.makedirs(args.outdir, exist_ok=True)
+
+print(f"Using data path: {args.data}")
+print(f"Using output directory: {args.outdir}")
 
 # ---------------- Load config (already loaded above) ----------------
 # Config already loaded for default path
