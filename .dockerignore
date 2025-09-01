@@ -1,0 +1,50 @@
+# Exclude hardware components (not needed for cloud AI)
+Hardware/
+mosquitto/
+
+# Exclude development files
+.git/
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Exclude documentation and configs not needed in container
+docs/
+README.md
+*.md
+req.txt
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Exclude OS files
+.DS_Store
+Thumbs.db
+
+# Exclude unnecessary AI/src files (local/demo only)
+AI/src/mqtt_publisher_demo.py
+AI/src/pi_fallback.py
+AI/src/predict_irrigation.py
+AI/src/predict_anomaly.py
+AI/src/infer_service.py
+
+# Keep only essential AI components:
+# AI/config.yaml
+# AI/data/
+# AI/models/
+# AI/src/cloud_controller.py (main AI brain)
+# AI/src/utils.py (required utilities)
+# AI/src/streamlit_dashboard.py (web interface)
+# AI/src/generate_synthetic.py (data generation)
+# AI/src/train_irrigation.py (ML training)
+# AI/src/train_anomaly.py (anomaly training)
+# requirements.txt
+# Dockerfile

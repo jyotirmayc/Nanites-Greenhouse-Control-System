@@ -1,7 +1,9 @@
-pandas
-numpy
-scikit-learn
-joblib
-paho-mqtt
-streamlit
-pyyaml
+pandas==2.0.3
+numpy==1.24.3
+scikit-learn==1.3.0
+joblib==1.3.2
+paho-mqtt==1.6.1
+streamlit==1.25.0
+pyyaml==6.0
+flask==2.3.2
+gunicorn==20.1.0
