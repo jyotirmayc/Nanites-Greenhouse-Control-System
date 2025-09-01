@@ -78,3 +78,9 @@ This document provides the details and specifications of the sensors used in the
 
 **Note:** In this project, some sensors are used in simulation mode. For real-world implementation, replace the potentiometer with an actual soil moisture sensor, and MQ2 should be calibrated for CO₂ detection.
 
+## 🔗 **Cloud Integration**
+
+All sensor data from the ESP32 hardware is transmitted via MQTT to the cloud-deployed IOTricity AI system. The Flask dashboard provides real-time visualization of all sensor readings with beautiful charts and responsive design.
+
+**Data Flow:** ESP32 → MQTT (HiveMQ) → Cloud AI → Flask Dashboard → WebSocket → Browser
+

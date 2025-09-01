@@ -19,7 +19,7 @@ COPY AI/data/ ./AI/data/
 # Copy only essential source files (exclude local/demo files)
 COPY AI/src/cloud_controller.py ./AI/src/
 COPY AI/src/utils.py ./AI/src/
-COPY AI/src/streamlit_dashboard.py ./AI/src/
+COPY AI/src/flask_dashboard.py ./AI/src/
 COPY AI/src/generate_synthetic.py ./AI/src/
 COPY AI/src/train_irrigation.py ./AI/src/
 COPY AI/src/train_anomaly.py ./AI/src/ 
@@ -30,7 +30,7 @@ ENV MQTT_BROKER=broker.hivemq.com
 ENV MQTT_PORT=1883
 ENV PYTHONUNBUFFERED=1
 
-# Expose port for Cloud Run
+# Expose port for Cloud Run (Flask dashboard)
 EXPOSE 8080
 
 # Create startup script that handles the proper AI workflow
@@ -89,9 +89,11 @@ echo "📝 Controller PID: $CONTROLLER_PID"\n\
 # Wait a moment for controller to initialize\n\
 sleep 5\n\
 \n\
-echo "📊 Starting Streamlit dashboard..."\n\
-# Start Streamlit dashboard (this runs in foreground)\n\
-exec streamlit run streamlit_dashboard.py --server.port=8080 --server.address=0.0.0.0 --server.headless=true\n\
+echo "🌐 Starting Flask dashboard on port 8080..."\n\
+# Start Flask dashboard with proper production setup\n\
+export FLASK_ENV=production\n\
+export PORT=8080\n\
+exec python flask_dashboard.py\n\
 ' > start.sh
 
 RUN chmod +x start.sh
