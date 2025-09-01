@@ -40,6 +40,7 @@ latest_data = {
     'last_update': 'Never',
     'connected': False,
     'commands': [],
+    'ai_commands': [],
     'data_count': 0
 }
 
@@ -52,6 +53,7 @@ HTML_TEMPLATE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IOTricity - Smart Greenhouse Monitor</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
@@ -67,6 +69,39 @@ HTML_TEMPLATE = '''
             min-height: 100vh;
             color: #2d3748;
             overflow-x: hidden;
+            margin: 0;
+            padding: 20px;
+        }
+        
+        .main-container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+        
+        .grid-layout {
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+        
+        .left-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        .right-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+        
+        .sensor-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
         }
         
         .particles {
@@ -77,6 +112,12 @@ HTML_TEMPLATE = '''
             height: 100%;
             pointer-events: none;
             z-index: -1;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
         }
         
         .particle {
@@ -153,25 +194,24 @@ HTML_TEMPLATE = '''
             margin-bottom: 40px;
         }
         
-        .metric-card {
+        .sensor-card {
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(15px);
-            padding: 30px;
             border-radius: 20px;
+            padding: 25px;
             box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
             position: relative;
             overflow: hidden;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-            border: 1px solid rgba(255, 255, 255, 0.2);
         }
         
-        .metric-card:hover {
-            transform: translateY(-10px);
+        .sensor-card:hover {
+            transform: translateY(-5px);
             box-shadow: 0 30px 60px rgba(0,0,0,0.2);
         }
         
-        .metric-card::before {
+        .sensor-card::before {
             content: '';
             position: absolute;
             top: 0;
@@ -182,33 +222,50 @@ HTML_TEMPLATE = '''
             border-radius: 20px 20px 0 0;
         }
         
-        .metric-icon {
-            font-size: 3em;
-            margin-bottom: 15px;
+        .sensor-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        
+        .sensor-title {
+            display: flex;
+            align-items: center;
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #2d3748;
+        }
+        
+        .sensor-icon {
+            font-size: 1.5em;
+            margin-right: 12px;
             color: var(--accent-color);
         }
         
-        .metric-value {
-            font-size: 2.8em;
+        .sensor-value {
+            font-size: 1.8em;
             font-weight: 700;
-            margin: 15px 0;
-            color: #2d3748;
-            font-variant-numeric: tabular-nums;
+            color: var(--accent-color);
         }
         
-        .metric-label {
-            color: #718096;
-            font-size: 1em;
-            font-weight: 500;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .metric-unit {
-            color: #a0aec0;
+        .sensor-unit {
             font-size: 0.9em;
-            font-weight: 400;
-            margin-top: 5px;
+            color: #718096;
+            margin-left: 5px;
+        }
+        
+        .sensor-chart {
+            height: 120px;
+            margin-top: 15px;
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--accent-color);
+            animation: pulse 2s infinite;
         }
         
         .temperature { --accent-color: #ef4444; }
@@ -217,76 +274,109 @@ HTML_TEMPLATE = '''
         .light { --accent-color: #f59e0b; }
         .co2 { --accent-color: #10b981; }
         
-        .commands-section {
+        .control-panel {
             background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(15px);
-            padding: 30px;
             border-radius: 20px;
+            padding: 25px;
             box-shadow: 0 20px 40px rgba(0,0,0,0.1);
             border: 1px solid rgba(255, 255, 255, 0.2);
-            margin-bottom: 40px;
         }
         
-        .commands-header {
+        .panel-header {
             display: flex;
             align-items: center;
-            margin-bottom: 25px;
-            font-size: 1.4em;
+            margin-bottom: 20px;
+            font-size: 1.3em;
             font-weight: 600;
             color: #2d3748;
         }
         
-        .commands-header i {
+        .panel-icon {
+            font-size: 1.5em;
             margin-right: 12px;
             color: #6366f1;
         }
         
-        .commands-grid {
+        .ai-commands-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 25px;
+            gap: 12px;
         }
         
-        .command-item {
-            padding: 15px 20px;
+        .command-chip {
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
             background: linear-gradient(135deg, #6366f1, #8b5cf6);
             color: white;
-            border-radius: 12px;
+            border-radius: 25px;
             font-weight: 500;
-            text-align: center;
-            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.3);
-            transition: transform 0.2s ease;
+            font-size: 0.95em;
+            box-shadow: 0 4px 15px rgba(99, 102, 241, 0.3);
+            transition: all 0.3s ease;
         }
         
-        .command-item:hover {
-            transform: scale(1.05);
+        .command-chip:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4);
         }
         
-        .stats-row {
+        .command-chip i {
+            margin-right: 10px;
+            font-size: 1.1em;
+        }
+        
+        .system-stats {
+            display: grid;
+            gap: 15px;
+        }
+        
+        .stat-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 15px 0;
-            border-top: 1px solid #e2e8f0;
-            font-size: 0.95em;
+            padding: 12px 0;
+            border-bottom: 1px solid #e2e8f0;
         }
         
-        .stat-item {
+        .stat-row:last-child {
+            border-bottom: none;
+        }
+        
+        .stat-label {
             display: flex;
             align-items: center;
             color: #718096;
+            font-size: 0.95em;
         }
         
-        .stat-item i {
+        .stat-label i {
             margin-right: 8px;
-            color: #a0aec0;
+            width: 16px;
         }
         
         .stat-value {
             font-weight: 600;
             color: #2d3748;
-            margin-left: 5px;
+        }
+        
+        .connection-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        
+        .badge-online {
+            background: #d1fae5;
+            color: #065f46;
+        }
+        
+        .badge-offline {
+            background: #fee2e2;
+            color: #991b1b;
         }
         
         .footer {
@@ -325,13 +415,51 @@ HTML_TEMPLATE = '''
             to { transform: rotate(360deg); }
         }
         
+        @media (max-width: 1200px) {
+            .grid-layout {
+                grid-template-columns: 1fr;
+                gap: 25px;
+            }
+            
+            .right-panel {
+                flex-direction: row;
+                gap: 25px;
+            }
+        }
+        
         @media (max-width: 768px) {
-            .container { padding: 15px; }
-            .header h1 { font-size: 2.5em; }
-            .header h3 { font-size: 1.1em; }
-            .dashboard { grid-template-columns: 1fr; gap: 20px; }
-            .metric-card { padding: 25px; }
-            .metric-value { font-size: 2.2em; }
+            .main-container {
+                padding: 0 15px;
+            }
+            
+            body {
+                padding: 15px;
+            }
+            
+            .header h1 {
+                font-size: 2.5em;
+            }
+            
+            .header h3 {
+                font-size: 1.1em;
+            }
+            
+            .sensor-grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            
+            .right-panel {
+                flex-direction: column;
+            }
+            
+            .sensor-card {
+                padding: 20px;
+            }
+            
+            .sensor-value {
+                font-size: 1.5em;
+            }
         }
     </style>
 </head>
@@ -349,88 +477,181 @@ HTML_TEMPLATE = '''
         <div class="particle" style="left: 90%; animation-delay: 3.5s; width: 4px; height: 4px;"></div>
     </div>
 
-    <div class="container">
+    <div class="main-container">
+        <!-- Header -->
         <div class="header">
             <h1><i class="fas fa-seedling"></i> IOTricity</h1>
             <h3><i class="fas fa-wifi"></i> Smart Greenhouse Monitoring System</h3>
         </div>
 
+        <!-- Connection Status -->
         <div id="connection-status" class="status disconnected">
             <div class="loading-spinner"></div>
             <i class="fas fa-plug"></i> Connecting to MQTT...
         </div>
 
-        <div class="dashboard">
-            <div class="metric-card temperature">
-                <div class="metric-icon"><i class="fas fa-thermometer-half"></i></div>
-                <div class="metric-label">Temperature</div>
-                <div class="metric-value" id="temperature">--</div>
-                <div class="metric-unit">Celsius</div>
+        <!-- Main Dashboard Layout -->
+        <div class="grid-layout">
+            <!-- Left Panel - Sensor Data -->
+            <div class="left-panel">
+                <div class="sensor-grid">
+                    <!-- Temperature Sensor -->
+                    <div class="sensor-card temperature">
+                        <div class="sensor-header">
+                            <div class="sensor-title">
+                                <div class="sensor-icon"><i class="fas fa-thermometer-half"></i></div>
+                                Temperature
+                            </div>
+                            <div class="sensor-value">
+                                <span id="temperature">--</span>
+                                <span class="sensor-unit">°C</span>
+                            </div>
+                        </div>
+                        <div class="sensor-chart">
+                            <canvas id="temp-chart"></canvas>
+                        </div>
+                        <div class="status-indicator"></div>
+                    </div>
+
+                    <!-- Humidity Sensor -->
+                    <div class="sensor-card humidity">
+                        <div class="sensor-header">
+                            <div class="sensor-title">
+                                <div class="sensor-icon"><i class="fas fa-tint"></i></div>
+                                Humidity
+                            </div>
+                            <div class="sensor-value">
+                                <span id="humidity">--</span>
+                                <span class="sensor-unit">%</span>
+                            </div>
+                        </div>
+                        <div class="sensor-chart">
+                            <canvas id="humidity-chart"></canvas>
+                        </div>
+                        <div class="status-indicator"></div>
+                    </div>
+
+                    <!-- Soil Moisture Sensor -->
+                    <div class="sensor-card soil">
+                        <div class="sensor-header">
+                            <div class="sensor-title">
+                                <div class="sensor-icon"><i class="fas fa-mountain"></i></div>
+                                Soil Moisture
+                            </div>
+                            <div class="sensor-value">
+                                <span id="soil_moisture">--</span>
+                                <span class="sensor-unit">θ</span>
+                            </div>
+                        </div>
+                        <div class="sensor-chart">
+                            <canvas id="soil-chart"></canvas>
+                        </div>
+                        <div class="status-indicator"></div>
+                    </div>
+
+                    <!-- Light Intensity Sensor -->
+                    <div class="sensor-card light">
+                        <div class="sensor-header">
+                            <div class="sensor-title">
+                                <div class="sensor-icon"><i class="fas fa-sun"></i></div>
+                                Light Intensity
+                            </div>
+                            <div class="sensor-value">
+                                <span id="light_intensity">--</span>
+                                <span class="sensor-unit">PPFD</span>
+                            </div>
+                        </div>
+                        <div class="sensor-chart">
+                            <canvas id="light-chart"></canvas>
+                        </div>
+                        <div class="status-indicator"></div>
+                    </div>
+
+                    <!-- CO2 Sensor -->
+                    <div class="sensor-card co2">
+                        <div class="sensor-header">
+                            <div class="sensor-title">
+                                <div class="sensor-icon"><i class="fas fa-cloud"></i></div>
+                                CO₂ Level
+                            </div>
+                            <div class="sensor-value">
+                                <span id="co2_level">--</span>
+                                <span class="sensor-unit">ppm</span>
+                            </div>
+                        </div>
+                        <div class="sensor-chart">
+                            <canvas id="co2-chart"></canvas>
+                        </div>
+                        <div class="status-indicator"></div>
+                    </div>
+                </div>
             </div>
-            
-            <div class="metric-card humidity">
-                <div class="metric-icon"><i class="fas fa-tint"></i></div>
-                <div class="metric-label">Humidity</div>
-                <div class="metric-value" id="humidity">--</div>
-                <div class="metric-unit">% Relative</div>
-            </div>
-            
-            <div class="metric-card soil">
-                <div class="metric-icon"><i class="fas fa-mountain"></i></div>
-                <div class="metric-label">Soil Moisture</div>
-                <div class="metric-value" id="soil_moisture">--</div>
-                <div class="metric-unit">Theta Value</div>
-            </div>
-            
-            <div class="metric-card light">
-                <div class="metric-icon"><i class="fas fa-sun"></i></div>
-                <div class="metric-label">Light Intensity</div>
-                <div class="metric-value" id="light_intensity">--</div>
-                <div class="metric-unit">PPFD</div>
-            </div>
-            
-            <div class="metric-card co2">
-                <div class="metric-icon"><i class="fas fa-cloud"></i></div>
-                <div class="metric-label">CO₂ Level</div>
-                <div class="metric-value" id="co2_level">--</div>
-                <div class="metric-unit">ppm</div>
+
+            <!-- Right Panel - Controls & Stats -->
+            <div class="right-panel">
+                <!-- AI Commands Panel -->
+                <div class="control-panel">
+                    <div class="panel-header">
+                        <div class="panel-icon"><i class="fas fa-robot"></i></div>
+                        AI Control Commands
+                    </div>
+                    <div class="ai-commands-grid" id="commands-list">
+                        <div class="command-chip pulse">
+                            <i class="fas fa-spinner fa-spin"></i> Waiting for AI...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Stats Panel -->
+                <div class="control-panel">
+                    <div class="panel-header">
+                        <div class="panel-icon"><i class="fas fa-chart-line"></i></div>
+                        System Status
+                    </div>
+                    <div class="system-stats">
+                        <div class="stat-row">
+                            <div class="stat-label">
+                                <i class="fas fa-clock"></i>
+                                Last Update
+                            </div>
+                            <div class="stat-value" id="last-update">Never</div>
+                        </div>
+                        <div class="stat-row">
+                            <div class="stat-label">
+                                <i class="fas fa-database"></i>
+                                Data Points
+                            </div>
+                            <div class="stat-value" id="data-count">0</div>
+                        </div>
+                        <div class="stat-row">
+                            <div class="stat-label">
+                                <i class="fas fa-signal"></i>
+                                MQTT Status
+                            </div>
+                            <div class="connection-badge badge-offline" id="connection-badge">
+                                Offline
+                            </div>
+                        </div>
+                        <div class="stat-row">
+                            <div class="stat-label">
+                                <i class="fas fa-microchip"></i>
+                                Device ID
+                            </div>
+                            <div class="stat-value">A1</div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <div class="commands-section">
-            <div class="commands-header">
-                <i class="fas fa-robot"></i>
-                AI Control Commands
-            </div>
-            <div class="commands-grid" id="commands-list">
-                <div class="command-item pulse">
-                    <i class="fas fa-spinner fa-spin"></i> Waiting for commands...
-                </div>
-            </div>
-            
-            <div class="stats-row">
-                <div class="stat-item">
-                    <i class="fas fa-clock"></i>
-                    Last Update: <span class="stat-value" id="last-update">Never</span>
-                </div>
-                <div class="stat-item">
-                    <i class="fas fa-database"></i>
-                    Data Points: <span class="stat-value" id="data-count">0</span>
-                </div>
-                <div class="stat-item">
-                    <i class="fas fa-signal"></i>
-                    Connection: <span class="stat-value" id="connection-indicator">Offline</span>
-                </div>
-            </div>
-        </div>
-
+        <!-- Footer -->
         <div class="footer">
             <p>
                 <i class="fas fa-rocket"></i> 
-                <strong>IOTricity Dashboard</strong> 
-                | Real-time IoT Greenhouse Monitoring
+                <strong>IOTricity Dashboard v2.0</strong> 
+                | Real-time IoT Greenhouse Monitoring with Live Charts
                 <br>
-                <small>Powered by Flask + Socket.IO + MQTT</small>
+                <small>Powered by Flask + Socket.IO + Plotly.js</small>
             </p>
         </div>
     </div>
@@ -438,10 +659,106 @@ HTML_TEMPLATE = '''
     <script>
         const socket = io();
         
-        // Initialize UI elements
-        const statusDiv = document.getElementById('connection-status');
-        const connectionIndicator = document.getElementById('connection-indicator');
+        // Chart instances storage
+        const charts = {};
+        const MAX_POINTS = 15;
         
+        // Chart colors matching sensor types
+        const chartColors = {
+            temperature: '#ef4444',
+            humidity: '#3b82f6',
+            soil_moisture: '#8b5cf6',
+            light_intensity: '#f59e0b',
+            co2_level: '#10b981'
+        };
+        
+        // Initialize all charts
+        function initializeCharts() {
+            const sensors = [
+                { key: 'temperature', canvas: 'temp-chart', label: 'Temperature (°C)' },
+                { key: 'humidity', canvas: 'humidity-chart', label: 'Humidity (%)' },
+                { key: 'soil_moisture', canvas: 'soil-chart', label: 'Soil Moisture' },
+                { key: 'light_intensity', canvas: 'light-chart', label: 'Light (PPFD)' },
+                { key: 'co2_level', canvas: 'co2-chart', label: 'CO₂ (ppm)' }
+            ];
+            
+            sensors.forEach(sensor => {
+                const ctx = document.getElementById(sensor.canvas);
+                if (ctx) {
+                    charts[sensor.key] = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: [],
+                            datasets: [{
+                                label: sensor.label,
+                                data: [],
+                                borderColor: chartColors[sensor.key],
+                                backgroundColor: chartColors[sensor.key] + '20',
+                                borderWidth: 3,
+                                pointRadius: 4,
+                                pointBackgroundColor: chartColors[sensor.key],
+                                pointBorderColor: '#ffffff',
+                                pointBorderWidth: 2,
+                                fill: true,
+                                tension: 0.4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            },
+                            scales: {
+                                x: {
+                                    display: false
+                                },
+                                y: {
+                                    display: false,
+                                    beginAtZero: true
+                                }
+                            },
+                            elements: {
+                                point: {
+                                    hoverRadius: 8
+                                }
+                            },
+                            animation: {
+                                duration: 750,
+                                easing: 'easeOutCubic'
+                            }
+                        }
+                    });
+                }
+            });
+            
+            console.log('📊 Charts initialized:', Object.keys(charts));
+        }
+        
+        // Update specific chart with new data
+        function updateChart(sensorKey, value, timestamp) {
+            const chart = charts[sensorKey];
+            if (!chart) return;
+            
+            const numValue = parseFloat(value) || 0;
+            
+            // Add new data point
+            chart.data.labels.push(timestamp);
+            chart.data.datasets[0].data.push(numValue);
+            
+            // Keep only last MAX_POINTS
+            if (chart.data.labels.length > MAX_POINTS) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+            }
+            
+            // Update the chart
+            chart.update('none'); // No animation for smoother updates
+        }
+        
+        // Socket event handlers
         socket.on('connect', function() {
             console.log('🔗 Connected to Flask-SocketIO');
             updateConnectionStatus(true);
@@ -450,9 +767,17 @@ HTML_TEMPLATE = '''
         socket.on('mqtt_data', function(data) {
             console.log('📊 Received data:', data);
             updateConnectionStatus(true);
-            updateMetrics(data);
+            updateSensorValues(data);
             updateCommands(data);
-            updateStats(data);
+            updateSystemStats(data);
+            
+            // Update all charts with new data
+            const timestamp = new Date().toLocaleTimeString();
+            updateChart('temperature', data.temperature, timestamp);
+            updateChart('humidity', data.humidity, timestamp);
+            updateChart('soil_moisture', data.soil_moisture, timestamp);
+            updateChart('light_intensity', data.light_intensity, timestamp);
+            updateChart('co2_level', data.co2_level, timestamp);
         });
         
         socket.on('disconnect', function() {
@@ -461,26 +786,38 @@ HTML_TEMPLATE = '''
         });
         
         function updateConnectionStatus(connected) {
+            const statusDiv = document.getElementById('connection-status');
+            const connectionBadge = document.getElementById('connection-badge');
+            
             if (connected) {
                 statusDiv.className = 'status connected';
-                statusDiv.innerHTML = '<i class="fas fa-check-circle"></i> MQTT Connected - Receiving Live Data';
-                connectionIndicator.textContent = 'Online';
-                connectionIndicator.style.color = '#10b981';
+                statusDiv.innerHTML = '<i class="fas fa-check-circle"></i> MQTT Connected - Live Data + Charts';
+                connectionBadge.textContent = 'Online';
+                connectionBadge.className = 'connection-badge badge-online';
             } else {
                 statusDiv.className = 'status disconnected';
                 statusDiv.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Disconnected from Dashboard';
-                connectionIndicator.textContent = 'Offline';
-                connectionIndicator.style.color = '#ef4444';
+                connectionBadge.textContent = 'Offline';
+                connectionBadge.className = 'connection-badge badge-offline';
             }
         }
         
-        function updateMetrics(data) {
+        function updateSensorValues(data) {
+            // Clean numeric values for display
+            const values = {
+                temperature: parseFloat(data.temperature).toFixed(1),
+                humidity: parseFloat(data.humidity).toFixed(0),
+                soil_moisture: parseFloat(data.soil_moisture).toFixed(3),
+                light_intensity: parseFloat(data.light_intensity).toFixed(1),
+                co2_level: Math.round(parseFloat(data.co2_level))
+            };
+            
             // Animate value changes
-            animateValue('temperature', data.temperature);
-            animateValue('humidity', data.humidity);
-            animateValue('soil_moisture', data.soil_moisture);
-            animateValue('light_intensity', data.light_intensity);
-            animateValue('co2_level', data.co2_level);
+            animateValue('temperature', values.temperature);
+            animateValue('humidity', values.humidity);
+            animateValue('soil_moisture', values.soil_moisture);
+            animateValue('light_intensity', values.light_intensity);
+            animateValue('co2_level', values.co2_level);
         }
         
         function animateValue(elementId, newValue) {
@@ -513,32 +850,34 @@ HTML_TEMPLATE = '''
                     const icon = icons[cmd.toLowerCase()] || icons['default'];
                     
                     return `
-                        <div class="command-item" style="animation-delay: ${index * 0.1}s;">
-                            <i class="${icon}"></i> ${cmd.charAt(0).toUpperCase() + cmd.slice(1)}
+                        <div class="command-chip" style="animation-delay: ${index * 0.1}s;">
+                            <i class="${icon}"></i> 
+                            ${cmd.charAt(0).toUpperCase() + cmd.slice(1)}
                         </div>
                     `;
                 }).join('');
             } else {
                 commandsList.innerHTML = `
-                    <div class="command-item pulse">
-                        <i class="fas fa-hourglass-half"></i> Waiting for AI commands...
+                    <div class="command-chip pulse">
+                        <i class="fas fa-hourglass-half"></i> 
+                        Waiting for AI commands...
                     </div>
                 `;
             }
         }
         
-        function updateStats(data) {
-            document.getElementById('last-update').textContent = data.last_update;
-            document.getElementById('data-count').textContent = data.data_count;
+        function updateSystemStats(data) {
+            document.getElementById('last-update').textContent = data.last_update || 'Never';
+            document.getElementById('data-count').textContent = data.data_count || '0';
         }
         
-        // Auto-reload page if disconnected for too long
+        // Auto-reload on extended disconnection
         let disconnectTimer = null;
         socket.on('disconnect', function() {
             disconnectTimer = setTimeout(() => {
-                console.log('🔄 Auto-reloading due to extended disconnection...');
+                console.log('🔄 Auto-reloading due to disconnection...');
                 location.reload();
-            }, 15000); // Reload after 15 seconds
+            }, 15000);
         });
         
         socket.on('connect', function() {
@@ -548,22 +887,29 @@ HTML_TEMPLATE = '''
             }
         });
         
-        // Add some interactive elements
+        // Initialize everything when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            // Add hover effects to metric cards
-            const metricCards = document.querySelectorAll('.metric-card');
-            metricCards.forEach(card => {
-                card.addEventListener('mouseenter', function() {
-                    this.style.transform = 'translateY(-10px) scale(1.02)';
+            console.log('🚀 Initializing IOTricity Dashboard v2.0 with Charts...');
+            
+            // Wait a moment for the DOM to be fully ready, then initialize charts
+            setTimeout(() => {
+                initializeCharts();
+                updateConnectionStatus(false);
+                
+                // Add hover effects to sensor cards
+                const sensorCards = document.querySelectorAll('.sensor-card');
+                sensorCards.forEach(card => {
+                    card.addEventListener('mouseenter', function() {
+                        this.style.transform = 'translateY(-5px) scale(1.02)';
+                    });
+                    
+                    card.addEventListener('mouseleave', function() {
+                        this.style.transform = 'translateY(0) scale(1)';
+                    });
                 });
                 
-                card.addEventListener('mouseleave', function() {
-                    this.style.transform = 'translateY(0) scale(1)';
-                });
-            });
-            
-            // Initialize connection status
-            updateConnectionStatus(false);
+                console.log('✅ Dashboard v2.0 initialized with live charts!');
+            }, 100);
         });
     </script>
 </body>
@@ -571,9 +917,17 @@ HTML_TEMPLATE = '''
 '''
 
 # MQTT Client Setup
-mqtt_client = mqtt.Client()
+try:
+    # Try newer version first
+    import paho.mqtt.client as mqtt_temp
+    if hasattr(mqtt_temp, 'CallbackAPIVersion'):
+        mqtt_client = mqtt.Client(callback_api_version=mqtt_temp.CallbackAPIVersion.VERSION2)
+    else:
+        mqtt_client = mqtt.Client()
+except:
+    mqtt_client = mqtt.Client()
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         logger.info("✅ Connected to MQTT broker.hivemq.com")
         latest_data['connected'] = True
@@ -611,12 +965,36 @@ def on_message(client, userdata, msg):
         elif topic == COMMAND_TOPIC:
             # Parse AI commands
             try:
-                commands = json.loads(payload)
-                if isinstance(commands, list):
-                    latest_data['commands'] = commands[:5]  # Keep last 5 commands
-                    logger.info(f"🤖 Command: {commands}")
-            except:
-                latest_data['commands'].append(payload)
+                cmd_data = json.loads(payload)
+                if 'actions' in cmd_data and isinstance(cmd_data['actions'], dict):
+                    # Extract action names and details for display
+                    actions = []
+                    for action_name, action_details in cmd_data['actions'].items():
+                        if action_name == 'irrigation' and action_details.get('action') == 'on':
+                            duration = action_details.get('duration_s', 'N/A')
+                            actions.append(f"Irrigation ({duration}s)")
+                        elif action_name == 'fan' and 'duty' in action_details:
+                            duty = int(action_details['duty'] * 100)
+                            actions.append(f"Fan ({duty}%)")
+                        elif action_name == 'safety' and action_details.get('action') == 'safe_mode':
+                            actions.append("Safety Mode")
+                        else:
+                            actions.append(action_name.title())
+                    
+                    latest_data['commands'] = actions
+                    latest_data['ai_commands'].append({
+                        'timestamp': datetime.now().strftime("%H:%M:%S"),
+                        'cmd_id': cmd_data.get('cmd_id', 'N/A'),
+                        'actions': actions
+                    })
+                    
+                    # Keep only last 10 AI command logs
+                    if len(latest_data['ai_commands']) > 10:
+                        latest_data['ai_commands'] = latest_data['ai_commands'][-10:]
+                    
+                    logger.info(f"🤖 AI Command: {actions}")
+            except Exception as cmd_error:
+                logger.error(f"❌ Error parsing command: {cmd_error}")
         
         # Emit to all connected clients
         socketio.emit('mqtt_data', latest_data)
