@@ -14,7 +14,9 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* \
 # Copy only essential AI components for cloud deployment
 COPY AI/config.yaml ./AI/
 COPY AI/data/ ./AI/data/
-COPY AI/models/ ./AI/models/
+
+# Don't copy existing models - we'll retrain them with compatible versions
+# COPY AI/models/ ./AI/models/
 
 # Copy only essential source files (exclude local/demo files)
 COPY AI/src/cloud_controller.py ./AI/src/
@@ -46,35 +48,33 @@ echo "🚀 Starting IoTricity AI Service..."\n\
 mkdir -p AI/models AI/data AI/logs\n\
 \n\
 # Step 1: Generate synthetic data if not present\n\
-if [ ! -f "AI/data/synthetic_greenhouse_7days_10min.csv" ]; then\n\
+echo "📊 Checking for training data..."\n\
+cd AI/src\n\
+if [ ! -f "../data/synthetic_greenhouse_7days_10min.csv" ]; then\n\
   echo "📊 Generating synthetic training data..."\n\
-  cd AI/src && python generate_synthetic.py && cd /app\n\
+  python generate_synthetic.py\n\
 fi\n\
 \n\
-# Step 2: Train models if not present\n\
-if [ ! -f "AI/models/irrigation_rf.pkl" ]; then\n\
-  echo "🧠 Training irrigation model..."\n\
-  cd AI/src && python train_irrigation.py && cd /app\n\
-fi\n\
+# Step 2: Always retrain models to ensure version compatibility\n\
+echo "🧠 Training irrigation model..."\n\
+python train_irrigation.py\n\
 \n\
-if [ ! -f "AI/models/anomaly_iforest.pkl" ]; then\n\
-  echo "🔍 Training anomaly detection model..."\n\
-  cd AI/src && python train_anomaly.py && cd /app\n\
-fi\n\
+echo "🔍 Training anomaly detection model..."\n\
+python train_anomaly.py\n\
 \n\
 echo "✅ Models ready!"\n\
 \n\
 # Step 3: Start AI services\n\
 echo "🤖 Starting cloud controller (AI brain)..."\n\
-cd AI/src && python cloud_controller.py &\n\
+python cloud_controller.py &\n\
 CONTROLLER_PID=$!\n\
 \n\
 # Wait a moment for controller to initialize\n\
-sleep 3\n\
+sleep 5\n\
 \n\
 echo "📊 Starting Streamlit dashboard..."\n\
 # Start Streamlit dashboard (this runs in foreground)\n\
-streamlit run streamlit_dashboard.py --server.port=8080 --server.address=0.0.0.0 --server.headless=true\n\
+exec streamlit run streamlit_dashboard.py --server.port=8080 --server.address=0.0.0.0 --server.headless=true\n\
 ' > start.sh
 
 RUN chmod +x start.sh

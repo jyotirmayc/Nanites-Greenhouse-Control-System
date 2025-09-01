@@ -19,14 +19,31 @@ TOPIC_TELE = f"greenhouse/{BAY}/telemetry"
 TOPIC_CMD  = f"greenhouse/{BAY}/cmd"
 TOPIC_ALERT = f"greenhouse/{BAY}/alerts"
 
-# Load models
+# Load models with retry mechanism for cloud deployment
 irrig_model_path = os.path.join(MODEL_DIR, "irrigation_rf.pkl")
 anom_model_path  = os.path.join(MODEL_DIR, "anomaly_iforest.pkl")
-if not os.path.exists(irrig_model_path) or not os.path.exists(anom_model_path):
-    raise FileNotFoundError("Expected models not found in models/")
 
-irrig_model = joblib.load(irrig_model_path)
-anom_model = joblib.load(anom_model_path)
+# Wait for models to be available (training might still be in progress)
+max_retries = 30  # Wait up to 5 minutes
+retry_count = 0
+while retry_count < max_retries:
+    if os.path.exists(irrig_model_path) and os.path.exists(anom_model_path):
+        try:
+            irrig_model = joblib.load(irrig_model_path)
+            anom_model = joblib.load(anom_model_path)
+            print(f"✅ Models loaded successfully after {retry_count} retries")
+            break
+        except Exception as e:
+            print(f"⚠️ Model loading failed (attempt {retry_count + 1}): {e}")
+            time.sleep(10)
+            retry_count += 1
+    else:
+        print(f"⏳ Waiting for models to be trained... (attempt {retry_count + 1})")
+        time.sleep(10)
+        retry_count += 1
+
+if retry_count >= max_retries:
+    raise FileNotFoundError("Models not available after waiting - training may have failed")
 
 # Decision mapping parameters (tune in config.yaml or change here)
 T_SET = cfg.get('control',{}).get('T_set', 24.0)
