@@ -6,29 +6,40 @@ Pi fallback agent:
 """
 import os, json, time, uuid
 from datetime import datetime, timezone, timedelta
-import joblib
+import pickle
 import paho.mqtt.client as mqtt
-import pandas as pd
-from utils import load_config
+
+from utils import load_config, duration_from_delta, safe_parse_timestamp, rolling_features
 
 cfg = load_config("../config.yaml")
 MODEL_DIR = cfg['model_dir']
 BAY = "A1"
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "broker.hivemq.com")
 TOP_TELE = f"greenhouse/{BAY}/telemetry"
-TOP_CMD = f"greenhouse/{BAY}/cmd"
-TOP_CMD_CLOUD = f"greenhouse/{BAY}/cmd"
+TOP_CMD  = f"greenhouse/{BAY}/cmd"
 CLOUD_TIMEOUT_S = cfg.get('fallback', {}).get('cloud_timeout_s', 90)
 
 # Load local models
-irrig_model = joblib.load(os.path.join(MODEL_DIR, "irrigation_rf.pkl"))
-anom_model = joblib.load(os.path.join(MODEL_DIR, "anomaly_iforest.pkl"))
+with open(os.path.join(MODEL_DIR, "irrigation_rf.pkl"), "rb") as f:
+    irrig_model = pickle.load(f)
+with open(os.path.join(MODEL_DIR, "anomaly_iforest.pkl"), "rb") as f:
+    anom_model = pickle.load(f)
 
 last_cloud_cmd_ts = None
 last_tele = None
+last_cmd_published_ts = None  # ponytail: cooldown guard — prevents command spam every 1s
 
-client = mqtt.Client()
-client.connect(MQTT_BROKER, 1883, 60)
+try:
+    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+except AttributeError:
+    client = mqtt.Client()
+while True:
+    try:
+        client.connect(MQTT_BROKER, 1883, 60)
+        break
+    except Exception as e:
+        print(f"MQTT connect failed: {e}. Retrying in 5s...")
+        time.sleep(5)
 
 def now_ts():
     return datetime.now(timezone.utc)
@@ -61,9 +72,9 @@ def on_cmd(client_c, userdata, msg):
 
 client.on_message = lambda c, u, m: None
 client.subscribe(TOP_TELE)
-client.subscribe(TOP_CMD_CLOUD)
+client.subscribe(TOP_CMD)
 client.message_callback_add(TOP_TELE, on_tele)
-client.message_callback_add(TOP_CMD_CLOUD, on_cmd)
+client.message_callback_add(TOP_CMD, on_cmd)
 client.loop_start()
 
 # Control thresholds
@@ -74,12 +85,6 @@ IRRIGATION_MIN_SEC = cfg.get('control', {}).get('irrigation_min_sec', 8)
 T_SET = cfg.get('control', {}).get('T_set', 24.0)
 T_DEADBAND = cfg.get('control', {}).get('T_deadband', 1.0)
 
-def duration_from_delta(delta):
-    if delta <= 0:
-        return 0
-    secs = (delta / 0.01) * 15.0
-    secs = max(IRRIGATION_MIN_SEC, min(IRRIGATION_MAX_SEC, secs))
-    return int(secs)
 
 while True:
     if last_cloud_cmd_ts and (now_ts() - last_cloud_cmd_ts) < timedelta(seconds=CLOUD_TIMEOUT_S):
@@ -92,18 +97,20 @@ while True:
 
     payload = last_tele
     soil = payload.get('soil_theta')
-    soil_lag1 = payload.get('soil_theta_prev', soil)
-    soil_roll_6 = payload.get('soil_roll_6', soil)
-    ppfd_roll_6 = payload.get('ppfd_roll_6', payload.get('PPFD', 0.0))
-    ext_T = payload.get('ext_T', payload.get('T', 0))
-    hour = pd.to_datetime(payload.get('ts')).hour if payload.get('ts') else datetime.now().hour
-    X = [[soil_lag1, soil_roll_6, ppfd_roll_6, payload.get('T'), payload.get('RH'), ext_T, hour]]
+    t    = payload.get('T',   0.0)
+    rh   = payload.get('RH',  0.0)
+    ppfd = payload.get('PPFD', 0.0)
+    ext_T = payload.get('ext_T', t)
+    hour = safe_parse_timestamp(payload.get('ts'))
+    # Compute rolling features server-side — matches train_irrigation.py FE.
+    soil_lag1, soil_roll_6, ppfd_roll_6 = rolling_features(soil if soil is not None else 0.0, ppfd)
+    X = [[soil_lag1, soil_roll_6, ppfd_roll_6, t, rh, ext_T, hour]]
     pred_soil_6h = float(irrig_model.predict(X)[0])
 
     actions = {}
     if pred_soil_6h < SOIL_MIN:
         delta = SOIL_TARGET - pred_soil_6h
-        secs = duration_from_delta(delta)
+        secs = duration_from_delta(delta, min_sec=IRRIGATION_MIN_SEC, max_sec=IRRIGATION_MAX_SEC)
         if secs > 0:
             actions['irrigation'] = {"action": "on", "duration_s": secs}
 
@@ -131,6 +138,13 @@ while True:
         actions['safety'] = {"action": "safe_mode"}
 
     if actions:
-        publish_cmd(actions, source="pi")
+        # Only publish if we haven't sent a command recently (cooldown = expires_s window)
+        # Without this, a fresh uuid4 is generated every 1s, bypassing ESP32 dedup,
+        # causing pump_end_time to be reset continuously -> indefinite irrigation.
+        expires_s = 120
+        if last_cmd_published_ts is None or \
+           (now_ts() - last_cmd_published_ts).total_seconds() >= expires_s:
+            publish_cmd(actions, source="pi", expires_s=expires_s)
+            last_cmd_published_ts = now_ts()
 
     time.sleep(1.0)

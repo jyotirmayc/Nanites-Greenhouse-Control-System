@@ -9,7 +9,6 @@ import paho.mqtt.client as mqtt
 import json
 import logging
 from datetime import datetime
-import threading
 import time
 import os
 
@@ -18,6 +17,7 @@ MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 TELEMETRY_TOPIC = "greenhouse/A1/telemetry"
 COMMAND_TOPIC = "greenhouse/A1/cmd"
+ALERTS_TOPIC = "greenhouse/A1/alerts"
 FLASK_PORT = int(os.environ.get('PORT', 5000))
 
 # Setup logging
@@ -41,6 +41,7 @@ latest_data = {
     'connected': False,
     'commands': [],
     'ai_commands': [],
+    'alerts': [],
     'data_count': 0
 }
 
@@ -104,40 +105,8 @@ HTML_TEMPLATE = '''
             gap: 25px;
         }
         
-        .particles {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-            z-index: -1;
-        }
         
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
-        .particle {
-            position: absolute;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 50%;
-            animation: float 6s ease-in-out infinite;
-        }
-        
-        @keyframes float {
-            0%, 100% { transform: translateY(0px) rotate(0deg); opacity: 1; }
-            50% { transform: translateY(-20px) rotate(180deg); opacity: 0.8; }
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        
+
         .header {
             text-align: center;
             margin-bottom: 40px;
@@ -464,18 +433,6 @@ HTML_TEMPLATE = '''
     </style>
 </head>
 <body>
-    <!-- Animated background particles -->
-    <div class="particles">
-        <div class="particle" style="left: 10%; animation-delay: 0s; width: 4px; height: 4px;"></div>
-        <div class="particle" style="left: 20%; animation-delay: 1s; width: 6px; height: 6px;"></div>
-        <div class="particle" style="left: 30%; animation-delay: 2s; width: 3px; height: 3px;"></div>
-        <div class="particle" style="left: 40%; animation-delay: 3s; width: 5px; height: 5px;"></div>
-        <div class="particle" style="left: 50%; animation-delay: 4s; width: 4px; height: 4px;"></div>
-        <div class="particle" style="left: 60%; animation-delay: 5s; width: 6px; height: 6px;"></div>
-        <div class="particle" style="left: 70%; animation-delay: 2.5s; width: 3px; height: 3px;"></div>
-        <div class="particle" style="left: 80%; animation-delay: 1.5s; width: 5px; height: 5px;"></div>
-        <div class="particle" style="left: 90%; animation-delay: 3.5s; width: 4px; height: 4px;"></div>
-    </div>
 
     <div class="main-container">
         <!-- Header -->
@@ -598,6 +555,19 @@ HTML_TEMPLATE = '''
                     <div class="ai-commands-grid" id="commands-list">
                         <div class="command-chip pulse">
                             <i class="fas fa-spinner fa-spin"></i> Waiting for AI...
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alerts Panel -->
+                <div class="control-panel">
+                    <div class="panel-header" style="color: #e53e3e;">
+                        <div class="panel-icon"><i class="fas fa-exclamation-triangle"></i></div>
+                        System Alerts
+                    </div>
+                    <div class="ai-commands-grid" id="alerts-list">
+                        <div class="command-chip" style="background: rgba(229, 62, 62, 0.1); color: #e53e3e; border: 1px solid rgba(229, 62, 62, 0.2);">
+                            <i class="fas fa-check-circle"></i> No active alerts
                         </div>
                     </div>
                 </div>
@@ -769,6 +739,7 @@ HTML_TEMPLATE = '''
             updateConnectionStatus(true);
             updateSensorValues(data);
             updateCommands(data);
+            updateAlerts(data);
             updateSystemStats(data);
             
             // Update all charts with new data
@@ -866,6 +837,21 @@ HTML_TEMPLATE = '''
             }
         }
         
+        function updateAlerts(data) {
+            const alertsList = document.getElementById('alerts-list');
+            if (data.alerts && data.alerts.length > 0) {
+                alertsList.innerHTML = data.alerts.map((alert, index) => {
+                    const icon = alert.level === 'critical' ? 'fas fa-radiation' : 'fas fa-exclamation-triangle';
+                    return `
+                        <div class="command-chip" style="background: rgba(229, 62, 62, 0.1); color: #e53e3e; border: 1px solid rgba(229, 62, 62, 0.2); animation-delay: ${index * 0.1}s;">
+                            <i class="${icon}"></i> 
+                            ${alert.timestamp} - ${alert.message}
+                        </div>
+                    `;
+                }).join('');
+            }
+        }
+        
         function updateSystemStats(data) {
             document.getElementById('last-update').textContent = data.last_update || 'Never';
             document.getElementById('data-count').textContent = data.data_count || '0';
@@ -924,7 +910,7 @@ try:
         mqtt_client = mqtt.Client(callback_api_version=mqtt_temp.CallbackAPIVersion.VERSION2)
     else:
         mqtt_client = mqtt.Client()
-except:
+except Exception:
     mqtt_client = mqtt.Client()
 
 def on_connect(client, userdata, flags, rc, properties=None):
@@ -933,6 +919,7 @@ def on_connect(client, userdata, flags, rc, properties=None):
         latest_data['connected'] = True
         client.subscribe(TELEMETRY_TOPIC)
         client.subscribe(COMMAND_TOPIC)
+        client.subscribe(ALERTS_TOPIC)
         socketio.emit('mqtt_data', latest_data)
     else:
         logger.error(f"❌ Failed to connect to MQTT broker. Code: {rc}")
@@ -948,13 +935,16 @@ def on_message(client, userdata, msg):
             data = json.loads(payload)
             
             # Update global state
+            def _fmt(v, spec):
+                # ponytail: format only if numeric, else 'N/A'
+                return format(v, spec) if isinstance(v, (int, float)) else 'N/A'
             latest_data.update({
                 'device_id': data.get('device_id', 'A1'),
-                'temperature': f"{data.get('T', 'N/A'):.1f}",
-                'humidity': f"{data.get('RH', 'N/A')}",
-                'soil_moisture': f"{data.get('soil_theta', 'N/A')}",
-                'light_intensity': f"{data.get('PPFD', 'N/A'):.1f}",
-                'co2_level': f"{data.get('CO2', 'N/A'):.0f}",
+                'temperature':     _fmt(data.get('T'),          '.1f'),
+                'humidity':        _fmt(data.get('RH'),         '.0f'),
+                'soil_moisture':   _fmt(data.get('soil_theta'), '.3f'),
+                'light_intensity': _fmt(data.get('PPFD'),       '.1f'),
+                'co2_level':       _fmt(data.get('CO2'),        '.0f'),
                 'last_update': datetime.now().strftime("%H:%M:%S"),
                 'connected': True,
                 'data_count': latest_data['data_count'] + 1
@@ -995,6 +985,20 @@ def on_message(client, userdata, msg):
                     logger.info(f"🤖 AI Command: {actions}")
             except Exception as cmd_error:
                 logger.error(f"❌ Error parsing command: {cmd_error}")
+                
+        elif topic == ALERTS_TOPIC:
+            try:
+                alert_data = json.loads(payload)
+                latest_data['alerts'].append({
+                    'timestamp': datetime.now().strftime("%H:%M:%S"),
+                    'message': alert_data.get('message', 'Anomaly detected!'),
+                    'level': alert_data.get('level', 'warning')
+                })
+                if len(latest_data['alerts']) > 5:
+                    latest_data['alerts'] = latest_data['alerts'][-5:]
+                logger.warning(f"⚠️ Alert: {alert_data.get('message')}")
+            except Exception as e:
+                logger.error(f"❌ Error parsing alert: {e}")
         
         # Emit to all connected clients
         socketio.emit('mqtt_data', latest_data)
@@ -1035,14 +1039,6 @@ def handle_disconnect():
     """Handle WebSocket disconnections"""
     logger.info("🔌 Client disconnected from SocketIO")
 
-def start_mqtt():
-    """Start MQTT connection in background thread"""
-    try:
-        logger.info("🚀 Connecting to MQTT broker...")
-        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        mqtt_client.loop_start()
-    except Exception as e:
-        logger.error(f"❌ MQTT connection failed: {e}")
 
 if __name__ == '__main__':
     print("🚀 Starting IOTricity Flask Dashboard...")
@@ -1051,10 +1047,12 @@ if __name__ == '__main__':
     print()
     print("👆 Open the URL above in your browser to see live data! 👆")
     
-    # Start MQTT in background
-    mqtt_thread = threading.Thread(target=start_mqtt)
-    mqtt_thread.daemon = True
-    mqtt_thread.start()
+    # Start MQTT (loop_start already runs in its own daemon thread)
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+    except Exception as e:
+        logger.error(f"❌ MQTT connection failed: {e}")
     
     # Start Flask-SocketIO server
     socketio.run(app, host='0.0.0.0', port=FLASK_PORT, debug=False)

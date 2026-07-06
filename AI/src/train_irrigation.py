@@ -6,39 +6,23 @@ from pathlib import Path
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
-import joblib
+import pickle
 import yaml
 
-# ---------------- Arguments ----------------
-parser = argparse.ArgumentParser()
-# Load config first to get the correct default path
+# ---------------- Config & Arguments ----------------
 CONFIG_PATH = Path("../config.yaml")
-if not CONFIG_PATH.exists():
-    # Try alternative paths for Docker deployment
-    for alt_path in ["config.yaml", "../../AI/config.yaml", "/app/AI/config.yaml"]:
-        if Path(alt_path).exists():
-            CONFIG_PATH = Path(alt_path)
-            break
-
-print(f"Loading config from: {CONFIG_PATH}")
 with CONFIG_PATH.open() as f:
     config = yaml.safe_load(f)
 
 default_data_path = config.get('training', {}).get('data_path', "../data/synthetic.csv")
-print(f"Default data path from config: {default_data_path}")
 
+parser = argparse.ArgumentParser()
 parser.add_argument("--data", default=os.getenv("DATA_PATH", default_data_path),
                     help="Path to input CSV with telemetry")
 parser.add_argument("--outdir", default=os.getenv("MODEL_DIR", "../models"),
                     help="Directory to save trained model + metadata")
 args = parser.parse_args()
 os.makedirs(args.outdir, exist_ok=True)
-
-print(f"Using data path: {args.data}")
-print(f"Using output directory: {args.outdir}")
-
-# ---------------- Load config (already loaded above) ----------------
-# Config already loaded for default path
 
 DATA_PATH = Path(args.data)
 if not DATA_PATH.exists():
@@ -71,17 +55,23 @@ rf.fit(X_train, y_train)
 # ---------------- Evaluate ----------------
 pred = rf.predict(X_test)
 meta = {
+    "model": "RandomForestRegressor",
+    "features": features,
     "mae_test": float(mean_absolute_error(y_test, pred)),
     "r2_test": float(r2_score(y_test, pred)),
-    "rows_train": len(X_train)
+    "rows_train": len(X_train),
+    "rows_test": len(X_test),
+    "horizon_steps": horizon,
+    "horizon_minutes": horizon * config.get('training', {}).get('timestep_minutes', 10),
 }
 
 # ---------------- Save model and metadata ----------------
 model_path = Path(args.outdir) / "irrigation_rf.pkl"
 meta_path = Path(args.outdir) / "irrigation_rf_meta.json"
-joblib.dump(rf, model_path)
+with open(model_path, 'wb') as f:
+    pickle.dump(rf, f)
 with meta_path.open("w") as f:
     json.dump(meta, f, indent=2)
 
-print(f"Saved model → {model_path}")
+print(f"Saved model -> {model_path}")
 print("Meta:", meta)

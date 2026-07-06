@@ -2,12 +2,12 @@
 Cloud controller: subscribes to telemetry, runs ML models, decides actions, and publishes `cmd` messages.
 It expects models in ../models produced by train scripts nd reads config.yaml for setpoints and horizons.
 """
-import os, json, time, uuid
+import os, json, uuid
 from datetime import datetime, timezone, timedelta
-import joblib
+import pickle
 import paho.mqtt.client as mqtt
-import pandas as pd
-from utils import load_config, read_csv  # reuse your utils
+
+from utils import load_config, duration_from_delta, safe_parse_timestamp, rolling_features
 
 cfg = load_config("../config.yaml")
 MODEL_DIR = cfg['model_dir']
@@ -18,13 +18,12 @@ TOPIC_CMD  = f"greenhouse/{BAY}/cmd"
 TOPIC_ALERT = f"greenhouse/{BAY}/alerts"
 
 # Load models
-irrig_model_path = os.path.join(MODEL_DIR, "irrigation_rf.pkl")
-anom_model_path  = os.path.join(MODEL_DIR, "anomaly_iforest.pkl")
-if not os.path.exists(irrig_model_path) or not os.path.exists(anom_model_path):
-    raise FileNotFoundError("Expected models not found in models/")
-
-irrig_model = joblib.load(irrig_model_path)
-anom_model = joblib.load(anom_model_path)
+if not os.path.exists(MODEL_DIR):
+    raise FileNotFoundError(f"Expected models not found in {MODEL_DIR}")
+with open(os.path.join(MODEL_DIR, "irrigation_rf.pkl"), "rb") as f:
+    irrig_model = pickle.load(f)
+with open(os.path.join(MODEL_DIR, "anomaly_iforest.pkl"), "rb") as f:
+    anom_model = pickle.load(f)
 
 # Decision mapping parameters (tune in config.yaml or change here)
 T_SET = cfg.get('control',{}).get('T_set', 24.0)
@@ -38,12 +37,21 @@ CMD_EXPIRES_S = cfg.get('control',{}).get('cmd_expires_s', 180)
 # MQTT setup
 try:
     client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-except:
+except AttributeError:
     client = mqtt.Client()
-client.connect(MQTT_BROKER, 1883, 60)
+import time
+while True:
+    try:
+        client.connect(MQTT_BROKER, 1883, 60)
+        break
+    except Exception as e:
+        print(f"MQTT connect failed: {e}. Retrying in 5s...")
+        time.sleep(5)
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
 
 def make_cmd(actions, source="cloud", expires_s=CMD_EXPIRES_S):
     cmd = {
@@ -55,91 +63,47 @@ def make_cmd(actions, source="cloud", expires_s=CMD_EXPIRES_S):
     }
     return cmd
 
-def duration_from_delta(delta):  # heuristic: map predicted deficit to seconds
-    # delta: positive amount of soil fraction needed (soil_target - pred_soil)
-    # map 0.01 VWC -> 15s, scaled, clamp
-    if delta <= 0:
-        return 0
-    secs = (delta / 0.01) * 15.0
-    secs = max(IRRIGATION_MIN_SEC, min(IRRIGATION_MAX_SEC, secs))
-    return int(secs)
 
-def safe_parse_timestamp(ts_val):
-    """Parse timestamp safely, handling ESP32 boot seconds and invalid dates"""
-    try:
-        if ts_val is None:
-            return datetime.now().hour
-        
-        # Handle ESP32 boot seconds (small numbers as strings like "32")
-        if isinstance(ts_val, str) and ts_val.isdigit():
-            boot_seconds = float(ts_val)
-            if boot_seconds < 86400:  # Less than 1 day in seconds
-                return datetime.now().hour  # Use current hour
-                
-        # Handle epoch timestamps
-        if isinstance(ts_val, (str, int, float)):
-            ts_num = float(ts_val)
-            # Check if it's a reasonable year (1970-2100)
-            if ts_num > 1e12:  # Milliseconds
-                ts_num = ts_num / 1000
-            if 0 < ts_num < 4000000000:  # Reasonable epoch range
-                return pd.to_datetime(ts_num, unit='s').hour
-                
-        # Try direct parsing
-        return pd.to_datetime(ts_val).hour
-    except Exception:
-        # Fallback to current hour
-        return datetime.now().hour
 
 def decide_actions_from_telemetry(payload):
-    # payload is dictionary with keys: T, RH, soil_theta (0-1), PPFD, CO2 (optional)
-    # Build features for irrigation model (same FE used in training)
-    # NOTE: We assume incoming payload includes rolling features where possible; otherwise use simple lags
     soil = payload.get('soil_theta')
-    t = payload.get('T')
-    rh = payload.get('RH')
+    t    = payload.get('T',   0.0)  # ponytail: default 0.0 to avoid None -> sklearn ValueError
+    rh   = payload.get('RH',  0.0)
     ppfd = payload.get('PPFD', 0.0)
-    # Build minimal feature vector used during training:
-    # ['soil_lag1','soil_roll_6','ppfd_roll_6','T','RH','ext_T','hour']
-    soil_lag1 = payload.get('soil_theta_prev', soil)
-    soil_roll_6 = payload.get('soil_roll_6', soil)
-    ppfd_roll_6 = payload.get('ppfd_roll_6', ppfd)
     ext_T = payload.get('ext_T', t)
     hour = safe_parse_timestamp(payload.get('ts'))
+    # Compute rolling features server-side — ESP32 only sends instantaneous readings.
+    # rolling_features() maintains a 60-min time buffer matching train_irrigation.py FE.
+    soil_lag1, soil_roll_6, ppfd_roll_6 = rolling_features(soil if soil is not None else 0.0, ppfd)
 
     X = [[soil_lag1, soil_roll_6, ppfd_roll_6, t, rh, ext_T, hour]]
     pred_soil_6h = float(irrig_model.predict(X)[0])
 
     actions = {}
 
-    print(f"[{now_iso()}] DEBUG: soil={soil}, SOIL_MIN={SOIL_MIN}, current_critical={soil < SOIL_MIN if soil else 'None'}")
+    print(f"[{now_iso()}] DEBUG: soil={soil}, SOIL_MIN={SOIL_MIN}, current_critical={soil < SOIL_MIN if soil is not None else 'None'}")
     print(f"[{now_iso()}] DEBUG: pred_soil_6h={pred_soil_6h}, predicted_low={pred_soil_6h < SOIL_MIN}")
 
     # HYBRID IRRIGATION LOGIC: Use both current and predicted soil
     # If current soil is critically low OR predicted soil is low, irrigate
-    current_soil_critical = soil < SOIL_MIN if soil is not None else False
-    predicted_soil_low = pred_soil_6h < SOIL_MIN
-    
-    if current_soil_critical or predicted_soil_low:
-        # Use current soil for immediate need, predicted soil for duration calculation
-        if current_soil_critical:
+    if (soil is not None and soil < SOIL_MIN) or pred_soil_6h < SOIL_MIN:
+        if soil is not None and soil < SOIL_MIN:
             delta = SOIL_TARGET - soil  # Base on current soil
             print(f"[{now_iso()}] CRITICAL: Current soil {soil:.3f} < {SOIL_MIN} - Immediate irrigation needed")
         else:
             delta = SOIL_TARGET - pred_soil_6h  # Base on predicted soil
             print(f"[{now_iso()}] PREDICTIVE: Predicted soil {pred_soil_6h:.3f} < {SOIL_MIN} - Preventive irrigation")
             
-        secs = duration_from_delta(delta)
+        secs = duration_from_delta(delta, min_sec=IRRIGATION_MIN_SEC, max_sec=IRRIGATION_MAX_SEC)
         print(f"[{now_iso()}] DEBUG: delta={delta}, secs={secs}")
         if secs > 0:
             actions['irrigation'] = {"action":"on", "duration_s": secs}
             print(f"[{now_iso()}] IRRIGATION: {secs}s command generated")
     # Temperature control: simple mapping using current temp (cloud can do advanced later)
-    if t is not None:
-        if t > T_SET + T_DEADBAND:
-            actions['fan'] = {"action":"set", "duty": 1.0}
-        elif t < T_SET - T_DEADBAND:
-            actions['fan'] = {"action":"set", "duty": 0.0}
+    if t > T_SET + T_DEADBAND:
+        actions['fan'] = {"action":"set", "duty": 1.0}
+    elif t < T_SET - T_DEADBAND:
+        actions['fan'] = {"action":"set", "duty": 0.0}
     # CO2: if absent or proxy, we skip; if high CO2 -> do nothing; if low, cloud may enrich (skip here)
     # Anomaly detection -> publish alert and potentially safe-mode action
     anom_input = [payload.get('T',0), payload.get('RH',0), payload.get('soil_theta',0), payload.get('PPFD',0), payload.get('CO2',0)]

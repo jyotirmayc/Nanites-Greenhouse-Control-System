@@ -1,34 +1,19 @@
 # src/train_anomaly.py
-from __future__ import annotations
-
 import argparse
 import json
+import pickle
 from pathlib import Path
-from typing import List
 import yaml
 
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 
-from utils import ensure_dir, save_model, resolve_path
-
 
 def parse_args():
-    # Load config to get default data path
     config_path = Path("../config.yaml")
-    if not config_path.exists():
-        # Try alternative paths for Docker deployment
-        for alt_path in ["config.yaml", "../../AI/config.yaml", "/app/AI/config.yaml"]:
-            if Path(alt_path).exists():
-                config_path = Path(alt_path)
-                break
-    
-    print(f"Loading config from: {config_path}")
     with config_path.open() as f:
         config = yaml.safe_load(f)
-    
     default_data_path = config.get('training', {}).get('data_path', '../data/synthetic.csv')
-    print(f"Default data path from config: {default_data_path}")
     
     p = argparse.ArgumentParser(description='Train IsolationForest anomaly detector')
     p.add_argument('--data', type=str, default=default_data_path, help='Path to telemetry CSV')
@@ -42,23 +27,23 @@ def parse_args():
 
 def main():
     args = parse_args()
-    data_path = resolve_path(args.data)
-    outdir = resolve_path(args.outdir)
+    data_path = Path(args.data).resolve()
+    outdir = Path(args.outdir).resolve()
     
     print(f"Resolved data path: {data_path}")
     print(f"Resolved output directory: {outdir}")
-    ensure_dir(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
 
     df = pd.read_csv(data_path)
 
-    features: List[str] = [f.strip() for f in args.features.split(',') if f.strip()]
+    features: list[str] = [f.strip() for f in args.features.split(',') if f.strip()]
     missing = [c for c in features if c not in df.columns]
     if missing:
         raise ValueError(f'Missing features in CSV: {missing}')
 
     X = df[features].copy()
     X = X.apply(pd.to_numeric, errors='coerce')
-    X = X.fillna(method='ffill').fillna(method='bfill').fillna(0)
+    X = X.ffill().bfill().fillna(0)
 
     iso = IsolationForest(contamination=float(args.contamination), random_state=int(args.random_state))
     iso.fit(X.values)
@@ -66,7 +51,8 @@ def main():
     model_path = outdir / 'anomaly_iforest.pkl'
     meta_path = outdir / 'anomaly_iforest_meta.json'
 
-    save_model(iso, model_path)
+    with open(model_path, 'wb') as f:
+        pickle.dump(iso, f)
 
     meta = {
         'model': 'IsolationForest',

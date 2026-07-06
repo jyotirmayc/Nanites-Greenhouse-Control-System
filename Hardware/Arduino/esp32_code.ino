@@ -60,6 +60,8 @@ unsigned long pump_end_time = 0;  // When to turn off irrigation pump
 // Timing
 unsigned long lastTeleMs = 0;
 unsigned long lastHeartbeatMs = 0;
+unsigned long ai_mode_start = 0;   // global so mqttCallback can reset it
+String last_cmd_id = "";           // ponytail: dedup guard — ESP has no RTC for real TTL check
 
 // Simulate soil volumetric water content
 float analogToVWC(int raw) {
@@ -88,12 +90,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int len) {
     DeserializationError error = deserializeJson(cmd, payload, len);
     
     if (!error) {
-      Serial.println("Processing command:");
-      
-      // Check if command has expired
-      String expires_at = cmd["expires_at"];
-      String cmd_id = cmd["cmd_id"];
+      String cmd_id = cmd["cmd_id"].as<String>();
+      // Skip duplicate / replayed commands (best-effort stale-command guard without RTC)
+      if (cmd_id == last_cmd_id) {
+        Serial.println("⚠️ Duplicate cmd_id — skipping");
+        return;
+      }
+      last_cmd_id = cmd_id;
       Serial.print("Command ID: "); Serial.println(cmd_id);
+      
+      ai_mode_start = millis(); // reset 5-min timeout on every new command (fixes timer-from-first-cmd bug)
       
       // Process actions
       JsonObject actions = cmd["actions"];
@@ -223,7 +229,7 @@ void loop() {
   int light_raw = analogRead(LDR_PIN);
   int mq2_raw = analogRead(MQ2_PIN);
   float soil_vwc = analogToVWC(soil_raw);
-  float ppfd = (float)light_raw/4095.0 * 100.0;
+  float ppfd = (float)light_raw/4095.0 * 1000.0;  // ponytail: scaled to match training range 0-1000
   float co2_proxy = (float)mq2_raw/4095.0 * 1000.0;
 
   // 🤖 AI CONTROL LOGIC - Check irrigation timer
@@ -255,12 +261,8 @@ void loop() {
     }
   }
   
-  // Reset AI mode after some time to allow local fallback (optional)
-  static unsigned long ai_mode_start = 0;
-  if (ai_mode && ai_mode_start == 0) {
-    ai_mode_start = now;
-  }
-  if (ai_mode && (now - ai_mode_start > 300000)) { // 5 minutes timeout
+  // Reset AI mode after 5 min of no new commands
+  if (ai_mode && (now - ai_mode_start > 300000)) {
     ai_mode = false;
     ai_mode_start = 0;
     Serial.println("🔄 AI mode timeout - returning to local control");
@@ -268,7 +270,12 @@ void loop() {
   // Display
   display.clearDisplay();
   display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0,0); display.printf("T: %.1fC RH: %.0f%%", temp, hum);
+  display.setCursor(0,0); 
+  if (isnan(temp) || isnan(hum)) {
+    display.printf("T: Err RH: Err");
+  } else {
+    display.printf("T: %.1fC RH: %.0f%%", temp, hum);
+  }
   display.setCursor(0,10); display.printf("Soil: %.3f", soil_vwc);
   display.setCursor(0,20); display.printf("Fan:%s Pump:%s", fan_state?"ON":"OFF", pump_state?"ON":"OFF");
   display.setCursor(0,30); display.printf("Mode: %s", ai_mode?"AI":"LOCAL");
